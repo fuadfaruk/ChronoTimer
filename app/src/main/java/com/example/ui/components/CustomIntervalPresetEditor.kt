@@ -1,0 +1,979 @@
+package com.example.ui.components
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.model.IntervalConfig
+import com.example.model.IntervalStep
+import com.example.model.TimeFormatter
+import com.example.ui.theme.NeonAmber
+import com.example.ui.theme.NeonCoral
+import com.example.ui.theme.NeonCyan
+import com.example.ui.theme.NeonGreen
+import com.example.ui.theme.NeonPurple
+import com.example.ui.theme.RobotoMonoFontFamily
+import com.example.util.NoiseProfile
+import com.example.viewmodel.ChronoViewModel
+import kotlinx.coroutines.launch
+import java.util.UUID
+
+private val stepAccentPalette = listOf(
+  0xFF00E676L, // NeonGreen
+  0xFF00E5FFL, // NeonCyan
+  0xFFFF9100L, // NeonAmber
+  0xFFB388FFL, // NeonPurple
+  0xFFFF5252L  // NeonCoral
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CustomIntervalPresetEditorDialog(
+  viewModel: ChronoViewModel,
+  editingPreset: IntervalConfig? = null,
+  onDismiss: () -> Unit,
+  onSave: (IntervalConfig) -> Unit,
+  onDelete: ((String) -> Unit)? = null
+) {
+  val isEditing = editingPreset != null && editingPreset.isCustom
+  var presetName by remember(editingPreset) {
+    mutableStateOf(
+      if (isEditing) editingPreset!!.name else ""
+    )
+  }
+  var repeatCount by remember(editingPreset) {
+    mutableIntStateOf(
+      if (isEditing) editingPreset!!.repeatCount.coerceAtLeast(1) else 1
+    )
+  }
+
+  val steps = remember(editingPreset) {
+    mutableStateListOf<IntervalStep>().apply {
+      if (isEditing && editingPreset!!.steps.isNotEmpty()) {
+        addAll(editingPreset.steps)
+      } else {
+        add(
+          IntervalStep(
+            name = "Deep Focus",
+            durationSeconds = 25 * 60,
+            backgroundSound = NoiseProfile.VOICE_MASKING,
+            colorHex = 0xFF00E676L
+          )
+        )
+        add(
+          IntervalStep(
+            name = "Short Break",
+            durationSeconds = 5 * 60,
+            backgroundSound = null,
+            colorHex = 0xFF00E5FFL
+          )
+        )
+      }
+    }
+  }
+
+  var pickingSoundForIndex by remember { mutableStateOf<Int?>(null) }
+  val listState = rememberLazyListState()
+  val coroutineScope = rememberCoroutineScope()
+
+  DisposableEffect(Unit) {
+    onDispose {
+      viewModel.stopWhiteNoisePreview()
+    }
+  }
+
+  val totalDurationSeconds = steps.sumOf { it.durationSeconds.coerceAtLeast(5) } * repeatCount
+
+  Dialog(
+    onDismissRequest = {
+      viewModel.stopWhiteNoisePreview()
+      onDismiss()
+    },
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Surface(
+      modifier = Modifier
+        .fillMaxSize()
+        .windowInsetsPadding(WindowInsets.safeDrawing),
+      color = MaterialTheme.colorScheme.background
+    ) {
+      Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+          TopAppBar(
+            title = {
+              Text(
+                text = if (isEditing) "Edit Interval Preset" else "New Interval Preset",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp
+              )
+            },
+            navigationIcon = {
+              IconButton(
+                onClick = {
+                  viewModel.stopWhiteNoisePreview()
+                  onDismiss()
+                },
+                modifier = Modifier.testTag("interval_editor_close_btn")
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Close Editor"
+                )
+              }
+            },
+            actions = {
+              if (isEditing && onDelete != null) {
+                IconButton(
+                  onClick = {
+                    viewModel.stopWhiteNoisePreview()
+                    onDelete(editingPreset!!.id)
+                  },
+                  modifier = Modifier.testTag("interval_editor_delete_btn")
+                ) {
+                  Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Delete Preset",
+                    tint = NeonCoral
+                  )
+                }
+              }
+              Button(
+                onClick = {
+                  viewModel.stopWhiteNoisePreview()
+                  val sanitizedSteps = steps.mapIndexed { idx, step ->
+                    step.copy(
+                      name = step.name.trim().ifBlank { "Interval ${idx + 1}" },
+                      durationSeconds = step.durationSeconds.coerceAtLeast(5)
+                    )
+                  }
+                  val finalPreset = IntervalConfig(
+                    id = if (isEditing) editingPreset!!.id else UUID.randomUUID().toString(),
+                    name = presetName.trim().ifBlank { "Custom Flow" },
+                    warmupSec = 0,
+                    workSec = sanitizedSteps.first().durationSeconds,
+                    restSec = 0,
+                    sets = repeatCount,
+                    steps = sanitizedSteps,
+                    repeatCount = repeatCount,
+                    isCustom = true
+                  )
+                  onSave(finalPreset)
+                },
+                enabled = steps.isNotEmpty(),
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                modifier = Modifier
+                  .padding(end = 8.dp)
+                  .testTag("interval_editor_save_btn")
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Check,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Save", fontWeight = FontWeight.Bold)
+              }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+              containerColor = MaterialTheme.colorScheme.surface
+            )
+          )
+        }
+      ) { innerPadding ->
+        LazyColumn(
+          state = listState,
+          modifier = Modifier
+            .fillMaxSize()
+            .padding(innerPadding)
+            .padding(horizontal = 16.dp),
+          contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          // 1. Preset Name & Cycle Summary Card
+          item {
+            Surface(
+              shape = RoundedCornerShape(16.dp),
+              color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+              ) {
+                OutlinedTextField(
+                  value = presetName,
+                  onValueChange = { presetName = it },
+                  label = { Text("Preset Name") },
+                  placeholder = { Text("e.g. Morning Study Flow, HIIT Circuit") },
+                  singleLine = true,
+                  shape = RoundedCornerShape(12.dp),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("interval_preset_name_input")
+                )
+
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    Icon(
+                      imageVector = Icons.Default.Repeat,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(18.dp)
+                    )
+                    Column {
+                      Text(
+                        text = "Repeat Sequence",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                      )
+                      Text(
+                        text = "${steps.size} intervals • Total ${TimeFormatter.formatDurationSummary(totalDurationSeconds.toLong())}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontFamily = RobotoMonoFontFamily
+                      )
+                    }
+                  }
+
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    SmallStepIconButton(
+                      onClick = { if (repeatCount > 1) repeatCount-- },
+                      icon = Icons.Default.Remove,
+                      contentDescription = "Decrease Repeat Cycles"
+                    )
+                    Text(
+                      text = "${repeatCount}x",
+                      fontFamily = RobotoMonoFontFamily,
+                      fontWeight = FontWeight.Bold,
+                      fontSize = 15.sp,
+                      modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    SmallStepIconButton(
+                      onClick = { if (repeatCount < 20) repeatCount++ },
+                      icon = Icons.Default.Add,
+                      contentDescription = "Increase Repeat Cycles"
+                    )
+                  }
+                }
+              }
+            }
+          }
+
+          // Section Header
+          item {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = "INTERVALS (${steps.size})",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                letterSpacing = 0.8.sp
+              )
+              Text(
+                text = "Tap sound to customize per interval",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+              )
+            }
+          }
+
+          // 2. Interval Step Cards
+          itemsIndexed(steps, key = { _, step -> step.id }) { index, step ->
+            IntervalStepEditorCard(
+              index = index,
+              totalSteps = steps.size,
+              step = step,
+              onStepChange = { updated -> steps[index] = updated },
+              onMoveUp = if (index > 0) {
+                {
+                  val item = steps.removeAt(index)
+                  steps.add(index - 1, item)
+                }
+              } else null,
+              onMoveDown = if (index < steps.lastIndex) {
+                {
+                  val item = steps.removeAt(index)
+                  steps.add(index + 1, item)
+                }
+              } else null,
+              onDelete = if (steps.size > 1) {
+                { steps.removeAt(index) }
+              } else null,
+              onPickSound = { pickingSoundForIndex = index }
+            )
+          }
+
+          // 3. Add Interval Button
+          item {
+            OutlinedButton(
+              onClick = {
+                val nextIndex = steps.size + 1
+                val nextColor = stepAccentPalette[steps.size % stepAccentPalette.size]
+                val nextSound = if (steps.lastOrNull()?.backgroundSound == null) {
+                  NoiseProfile.VOICE_MASKING
+                } else {
+                  NoiseProfile.PINK_NOISE
+                }
+                steps.add(
+                  IntervalStep(
+                    name = "Interval $nextIndex",
+                    durationSeconds = 10 * 60,
+                    backgroundSound = nextSound,
+                    colorHex = nextColor
+                  )
+                )
+                coroutineScope.launch {
+                  listState.animateScrollToItem(steps.size + 2)
+                }
+              },
+              shape = RoundedCornerShape(14.dp),
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)),
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .testTag("interval_add_step_btn")
+            ) {
+              Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+              )
+              Spacer(modifier = Modifier.width(8.dp))
+              Text(
+                text = "Add Interval",
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Per-Interval Sound Picker Dialog
+  val activeIndex = pickingSoundForIndex
+  if (activeIndex != null && activeIndex in steps.indices) {
+    IntervalSoundPickerDialog(
+      viewModel = viewModel,
+      intervalName = steps[activeIndex].name.ifBlank { "Interval ${activeIndex + 1}" },
+      selectedSound = steps[activeIndex].backgroundSound,
+      onSelect = { chosenSound ->
+        steps[activeIndex] = steps[activeIndex].copy(backgroundSound = chosenSound)
+        viewModel.stopWhiteNoisePreview()
+        pickingSoundForIndex = null
+      },
+      onDismiss = {
+        viewModel.stopWhiteNoisePreview()
+        pickingSoundForIndex = null
+      }
+    )
+  }
+}
+
+@Composable
+private fun IntervalStepEditorCard(
+  index: Int,
+  totalSteps: Int,
+  step: IntervalStep,
+  onStepChange: (IntervalStep) -> Unit,
+  onMoveUp: (() -> Unit)?,
+  onMoveDown: (() -> Unit)?,
+  onDelete: (() -> Unit)?,
+  onPickSound: () -> Unit
+) {
+  val accentColor = Color(step.colorHex)
+  val mins = step.durationSeconds / 60
+  val secs = step.durationSeconds % 60
+
+  Surface(
+    shape = RoundedCornerShape(16.dp),
+    color = MaterialTheme.colorScheme.surface,
+    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.45f)),
+    tonalElevation = 2.dp,
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("interval_step_card_$index")
+  ) {
+    Column(
+      modifier = Modifier.padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+      // Header Row: Step # + Color Picker + Reorder + Delete
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Box(
+            modifier = Modifier
+              .clip(RoundedCornerShape(8.dp))
+              .background(accentColor.copy(alpha = 0.16f))
+              .padding(horizontal = 8.dp, vertical = 3.dp)
+          ) {
+            Text(
+              text = "STEP ${index + 1}",
+              style = MaterialTheme.typography.labelSmall,
+              fontWeight = FontWeight.Bold,
+              color = accentColor
+            )
+          }
+
+          // Color selector dots
+          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            stepAccentPalette.forEach { colorLong ->
+              val isColorSelected = step.colorHex == colorLong
+              Box(
+                modifier = Modifier
+                  .size(if (isColorSelected) 20.dp else 16.dp)
+                  .clip(CircleShape)
+                  .background(Color(colorLong))
+                  .border(
+                    width = if (isColorSelected) 2.dp else 0.dp,
+                    color = if (isColorSelected) MaterialTheme.colorScheme.onBackground else Color.Transparent,
+                    shape = CircleShape
+                  )
+                  .clickable { onStepChange(step.copy(colorHex = colorLong)) }
+              )
+            }
+          }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          if (totalSteps > 1) {
+            IconButton(
+              onClick = { onMoveUp?.invoke() },
+              enabled = onMoveUp != null,
+              modifier = Modifier.size(36.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.ArrowUpward,
+                contentDescription = "Move Interval Up",
+                modifier = Modifier.size(18.dp),
+                tint = if (onMoveUp != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outline
+              )
+            }
+            IconButton(
+              onClick = { onMoveDown?.invoke() },
+              enabled = onMoveDown != null,
+              modifier = Modifier.size(36.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.ArrowDownward,
+                contentDescription = "Move Interval Down",
+                modifier = Modifier.size(18.dp),
+                tint = if (onMoveDown != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outline
+              )
+            }
+          }
+          if (onDelete != null) {
+            IconButton(
+              onClick = onDelete,
+              modifier = Modifier
+                .size(36.dp)
+                .testTag("interval_step_delete_$index")
+            ) {
+              Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = "Remove Interval",
+                modifier = Modifier.size(18.dp),
+                tint = NeonCoral.copy(alpha = 0.85f)
+              )
+            }
+          }
+        }
+      }
+
+      // Custom Interval Name Input
+      OutlinedTextField(
+        value = step.name,
+        onValueChange = { onStepChange(step.copy(name = it)) },
+        label = { Text("Interval Name") },
+        placeholder = { Text("e.g. Warm-up, Deep Focus, Break") },
+        singleLine = true,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("interval_step_name_$index")
+      )
+
+      // Duration Steppers (Minutes & Seconds)
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        CompactDurationField(
+          label = "Minutes",
+          value = mins,
+          onDecrement = {
+            val newMins = (mins - 1).coerceAtLeast(0)
+            val total = (newMins * 60 + secs).coerceAtLeast(5)
+            onStepChange(step.copy(durationSeconds = total))
+          },
+          onIncrement = {
+            val newMins = (mins + 1).coerceAtMost(180)
+            onStepChange(step.copy(durationSeconds = newMins * 60 + secs))
+          },
+          modifier = Modifier.weight(1f)
+        )
+
+        CompactDurationField(
+          label = "Seconds",
+          value = secs,
+          onDecrement = {
+            val total = (step.durationSeconds - 5).coerceAtLeast(5)
+            onStepChange(step.copy(durationSeconds = total))
+          },
+          onIncrement = {
+            val newSecs = secs + 5
+            val total = if (newSecs >= 60) {
+              (mins + 1).coerceAtMost(180) * 60
+            } else {
+              mins * 60 + newSecs
+            }
+            onStepChange(step.copy(durationSeconds = total))
+          },
+          modifier = Modifier.weight(1f)
+        )
+      }
+
+      // Quick duration pills for rapid entry
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+      ) {
+        val quickDurations = listOf(
+          15 to "15s",
+          30 to "30s",
+          60 to "1m",
+          5 * 60 to "5m",
+          15 * 60 to "15m",
+          25 * 60 to "25m",
+          45 * 60 to "45m"
+        )
+        quickDurations.forEach { (secVal, label) ->
+          val isMatch = step.durationSeconds == secVal
+          Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = if (isMatch) accentColor.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            border = BorderStroke(
+              1.dp,
+              if (isMatch) accentColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+            ),
+            modifier = Modifier
+              .clip(RoundedCornerShape(10.dp))
+              .clickable { onStepChange(step.copy(durationSeconds = secVal)) }
+          ) {
+            Text(
+              text = label,
+              fontFamily = RobotoMonoFontFamily,
+              fontSize = 11.sp,
+              fontWeight = if (isMatch) FontWeight.Bold else FontWeight.Medium,
+              color = if (isMatch) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+            )
+          }
+        }
+      }
+
+      // Background Sound Selector Card
+      val hasSound = step.backgroundSound != null
+      Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (hasSound) {
+          MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+        } else {
+          MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        },
+        border = BorderStroke(
+          1.dp,
+          if (hasSound) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+        ),
+        modifier = Modifier
+          .fillMaxWidth()
+          .clip(RoundedCornerShape(12.dp))
+          .clickable { onPickSound() }
+          .testTag("interval_step_sound_picker_$index")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.weight(1f)
+          ) {
+            Icon(
+              imageVector = if (hasSound) Icons.Default.Headphones else Icons.AutoMirrored.Filled.VolumeOff,
+              contentDescription = null,
+              tint = if (hasSound) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(18.dp)
+            )
+            Column {
+              Text(
+                text = "Background Sound",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+              Text(
+                text = step.backgroundSound?.displayName ?: "Silent (No Background Sound)",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (hasSound) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+              )
+            }
+          }
+
+          Text(
+            text = "Change",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun CompactDurationField(
+  label: String,
+  value: Int,
+  onDecrement: () -> Unit,
+  onIncrement: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  Surface(
+    shape = RoundedCornerShape(12.dp),
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+    modifier = modifier
+  ) {
+    Column(
+      horizontalAlignment = Alignment.CenterHorizontally,
+      modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+      Text(
+        text = label.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+      )
+      Spacer(modifier = Modifier.height(4.dp))
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        SmallStepIconButton(
+          onClick = onDecrement,
+          icon = Icons.Default.Remove,
+          contentDescription = "Decrease $label"
+        )
+        Text(
+          text = String.format("%02d", value),
+          fontFamily = RobotoMonoFontFamily,
+          fontWeight = FontWeight.Bold,
+          fontSize = 18.sp,
+          color = MaterialTheme.colorScheme.onBackground
+        )
+        SmallStepIconButton(
+          onClick = onIncrement,
+          icon = Icons.Default.Add,
+          contentDescription = "Increase $label"
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun SmallStepIconButton(
+  onClick: () -> Unit,
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  contentDescription: String
+) {
+  Box(
+    modifier = Modifier
+      .minimumInteractiveComponentSize()
+      .size(34.dp)
+      .clip(CircleShape)
+      .background(MaterialTheme.colorScheme.surface)
+      .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), CircleShape)
+      .clickable(onClick = onClick),
+    contentAlignment = Alignment.Center
+  ) {
+    Icon(
+      imageVector = icon,
+      contentDescription = contentDescription,
+      tint = MaterialTheme.colorScheme.primary,
+      modifier = Modifier.size(16.dp)
+    )
+  }
+}
+
+@Composable
+fun IntervalSoundPickerDialog(
+  viewModel: ChronoViewModel,
+  intervalName: String,
+  selectedSound: NoiseProfile?,
+  onSelect: (NoiseProfile?) -> Unit,
+  onDismiss: () -> Unit
+) {
+  val settings by viewModel.settings.collectAsState()
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = {
+      Column {
+        Text(
+          text = "Background Sound",
+          style = MaterialTheme.typography.titleMedium,
+          fontWeight = FontWeight.Bold
+        )
+        Text(
+          text = "For \"$intervalName\"",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.primary
+        )
+      }
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        // Silent option
+        val isSilent = selectedSound == null
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = if (isSilent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+          border = BorderStroke(
+            1.dp,
+            if (isSilent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onSelect(null) }
+            .testTag("sound_option_silent")
+        ) {
+          Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.VolumeOff,
+              contentDescription = null,
+              tint = if (isSilent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(20.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Silent (No Background Sound)",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isSilent) FontWeight.Bold else FontWeight.SemiBold,
+                color = if (isSilent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+              )
+              Text(
+                text = "Quiet interval with transition alerts only.",
+                style = MaterialTheme.typography.bodySmall,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+            if (isSilent) {
+              Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "Selected",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+              )
+            }
+          }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+        // Available synthesized ambient profiles
+        NoiseProfile.entries.forEach { profile ->
+          val isSelected = selectedSound == profile
+          val isPreviewing = settings.isWhiteNoisePlaying && settings.previewingProfile == profile
+
+          Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            border = BorderStroke(
+              1.dp,
+              if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(12.dp))
+              .clickable { onSelect(profile) }
+              .testTag("sound_option_${profile.name}")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(16.dp)
+                  .clip(CircleShape)
+                  .border(
+                    2.dp,
+                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    CircleShape
+                  )
+                  .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+              )
+
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = profile.displayName,
+                  style = MaterialTheme.typography.bodyMedium,
+                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                  color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                  text = profile.description,
+                  style = MaterialTheme.typography.bodySmall,
+                  fontSize = 11.sp,
+                  lineHeight = 14.sp,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              }
+
+              IconButton(
+                onClick = { viewModel.toggleNoiseProfilePreview(profile) },
+                modifier = Modifier.size(38.dp)
+              ) {
+                Icon(
+                  imageVector = if (isPreviewing) Icons.Default.Stop else Icons.Default.PlayArrow,
+                  contentDescription = if (isPreviewing) "Stop preview" else "Preview ${profile.shortLabel}",
+                  tint = if (isPreviewing) NeonAmber else MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(20.dp)
+                )
+              }
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = onDismiss) {
+        Text("Cancel")
+      }
+    }
+  )
+}

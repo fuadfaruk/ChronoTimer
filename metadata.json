@@ -1,0 +1,6 @@
+{
+  "name": "ChronoTimer",
+  "description": "Minimalist study & concentration timer with speech-masking white noise to drown out background chatter, precision stopwatch, and focus intervals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
