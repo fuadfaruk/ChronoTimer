@@ -1,9 +1,23 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,6 +70,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,13 +83,14 @@ import com.example.model.TimeFormatter
 import com.example.ui.components.AnimatedAudioWaves
 import com.example.ui.components.CircularProgressTimerArc
 import com.example.ui.components.CustomIntervalPresetEditorDialog
+import com.example.ui.components.FluidAnimatedValue
 import com.example.ui.components.NumberStepper
 import com.example.ui.components.WhiteNoiseSheet
-import com.example.ui.theme.NeonAmber
-import com.example.ui.theme.NeonCoral
-import com.example.ui.theme.NeonCyan
-import com.example.ui.theme.NeonGreen
+import com.example.ui.components.fluidPressScale
+import com.example.ui.components.fluidPulseHalo
 import com.example.ui.theme.RobotoMonoFontFamily
+import com.example.ui.theme.contrastingContentColor
+import com.example.ui.theme.resolveThemeAccentColor
 import com.example.viewmodel.ChronoViewModel
 
 @Composable
@@ -94,15 +110,22 @@ fun IntervalScreen(
   val config = intervalState.config
   val currentStep = intervalState.currentStep
 
-  val phaseColor = when {
-    intervalState.phase == IntervalPhase.FINISHED -> Color(0xFFFFD700)
-    config.isMultiStep && currentStep != null -> Color(currentStep.colorHex)
-    intervalState.phase == IntervalPhase.READY -> MaterialTheme.colorScheme.primary
-    intervalState.phase == IntervalPhase.PREPARE -> NeonAmber
-    intervalState.phase == IntervalPhase.WORK -> NeonGreen
-    intervalState.phase == IntervalPhase.REST -> NeonCyan
-    else -> MaterialTheme.colorScheme.primary
+  val colorScheme = MaterialTheme.colorScheme
+  val targetPhaseColor = when {
+    intervalState.phase == IntervalPhase.FINISHED -> colorScheme.tertiary
+    config.isMultiStep && currentStep != null -> resolveThemeAccentColor(currentStep.colorHex, colorScheme)
+    intervalState.phase == IntervalPhase.READY -> colorScheme.primary
+    intervalState.phase == IntervalPhase.PREPARE -> colorScheme.tertiary
+    intervalState.phase == IntervalPhase.WORK -> colorScheme.secondary
+    intervalState.phase == IntervalPhase.REST -> colorScheme.primary
+    else -> colorScheme.primary
   }
+
+  val phaseColor by animateColorAsState(
+    targetValue = targetPhaseColor,
+    animationSpec = tween(durationMillis = 480, easing = FastOutSlowInEasing),
+    label = "interval_phase_color"
+  )
 
   val phaseBadgeText = if (config.isMultiStep && currentStep != null) {
     when (intervalState.phase) {
@@ -123,6 +146,22 @@ fun IntervalScreen(
     }
     "$phaseTitle • SET ${intervalState.currentSet}/${config.sets}"
   }
+
+  val resetInteraction = remember { MutableInteractionSource() }
+  val startPauseInteraction = remember { MutableInteractionSource() }
+  val secondaryActionInteraction = remember { MutableInteractionSource() }
+
+  val targetStartBg = if (intervalState.isRunning) colorScheme.error else targetPhaseColor
+  val startBtnBgColor by animateColorAsState(
+    targetValue = targetStartBg,
+    animationSpec = tween(320, easing = FastOutSlowInEasing),
+    label = "interval_start_bg"
+  )
+  val startBtnContentColor by animateColorAsState(
+    targetValue = contrastingContentColor(targetStartBg, colorScheme),
+    animationSpec = tween(320, easing = FastOutSlowInEasing),
+    label = "interval_start_content"
+  )
 
   Column(
     modifier = modifier
@@ -146,9 +185,11 @@ fun IntervalScreen(
         // Built-in Default Interval Modes
         PresetDefaults.defaultIntervalConfigs.forEach { defaultConfig ->
           val isSelected = config.id == defaultConfig.id
+          val chipInteraction = remember(defaultConfig.id) { MutableInteractionSource() }
           FilterChip(
             selected = isSelected,
             onClick = { viewModel.selectIntervalConfig(defaultConfig) },
+            interactionSource = chipInteraction,
             label = {
               Text(
                 text = defaultConfig.name.substringBefore(" ("),
@@ -160,16 +201,19 @@ fun IntervalScreen(
             colors = FilterChipDefaults.filterChipColors(
               selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
               selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-            )
+            ),
+            modifier = Modifier.fluidPressScale(chipInteraction)
           )
         }
 
         // Saved Custom Interval Routines
         customIntervalPresets.forEach { preset ->
           val isSelected = config.id == preset.id
+          val chipInteraction = remember(preset.id) { MutableInteractionSource() }
           FilterChip(
             selected = isSelected,
             onClick = { viewModel.selectIntervalConfig(preset) },
+            interactionSource = chipInteraction,
             label = {
               Text(
                 text = preset.name,
@@ -184,17 +228,21 @@ fun IntervalScreen(
               selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
               selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
             ),
-            modifier = Modifier.testTag("interval_custom_preset_chip_${preset.id}")
+            modifier = Modifier
+              .fluidPressScale(chipInteraction)
+              .testTag("interval_custom_preset_chip_${preset.id}")
           )
         }
 
         // + Custom Multi-Interval Builder
+        val addChipInteraction = remember { MutableInteractionSource() }
         FilterChip(
           selected = config.id == "custom",
           onClick = {
             editingPreset = null
             showPresetEditor = true
           },
+          interactionSource = addChipInteraction,
           label = {
             Row(verticalAlignment = Alignment.CenterVertically) {
               Icon(
@@ -218,57 +266,65 @@ fun IntervalScreen(
             selected = false,
             borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
           ),
-          modifier = Modifier.testTag("interval_add_preset_chip")
+          modifier = Modifier
+            .fluidPressScale(addChipInteraction)
+            .testTag("interval_add_preset_chip")
         )
       }
     }
 
     // Selected Custom Preset Header (Summary + Edit Button)
-    if (config.isCustom) {
-      Spacer(modifier = Modifier.height(8.dp))
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
-        modifier = Modifier.fillMaxWidth()
-      ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
+    AnimatedVisibility(
+      visible = config.isCustom,
+      enter = fadeIn(tween(240)) + expandVertically(),
+      exit = fadeOut(tween(180)) + shrinkVertically()
+    ) {
+      Column {
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(
+          shape = RoundedCornerShape(14.dp),
+          color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+          modifier = Modifier.fillMaxWidth()
         ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = config.name,
-              style = MaterialTheme.typography.bodyMedium,
-              fontWeight = FontWeight.Bold,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-            Text(
-              text = "${config.steps.size} intervals • ${TimeFormatter.formatDurationSummary(config.totalDurationSeconds.toLong())}" +
-                if (config.repeatCount > 1) " • ${config.repeatCount}x cycles" else "",
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              fontFamily = RobotoMonoFontFamily
-            )
-          }
-
-          IconButton(
-            onClick = {
-              editingPreset = config
-              showPresetEditor = true
-            },
-            modifier = Modifier.testTag("interval_edit_preset_btn")
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
           ) {
-            Icon(
-              imageVector = Icons.Default.Edit,
-              contentDescription = "Edit Custom Preset",
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(18.dp)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = config.name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+              Text(
+                text = "${config.steps.size} intervals • ${TimeFormatter.formatDurationSummary(config.totalDurationSeconds.toLong())}" +
+                  if (config.repeatCount > 1) " • ${config.repeatCount}x cycles" else "",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = RobotoMonoFontFamily
+              )
+            }
+
+            IconButton(
+              onClick = {
+                editingPreset = config
+                showPresetEditor = true
+              },
+              modifier = Modifier.testTag("interval_edit_preset_btn")
+            ) {
+              Icon(
+                imageVector = Icons.Default.Edit,
+                contentDescription = "Edit Custom Preset",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+              )
+            }
           }
         }
       }
@@ -283,7 +339,14 @@ fun IntervalScreen(
       border = BorderStroke(1.dp, phaseColor.copy(alpha = 0.6f))
     ) {
       Row(
-        modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp),
+        modifier = Modifier
+          .padding(horizontal = 14.dp, vertical = 5.dp)
+          .animateContentSize(
+            animationSpec = spring(
+              dampingRatio = Spring.DampingRatioMediumBouncy,
+              stiffness = Spring.StiffnessMediumLow
+            )
+          ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
       ) {
@@ -293,15 +356,17 @@ fun IntervalScreen(
             .clip(CircleShape)
             .background(phaseColor)
         )
-        Text(
-          text = phaseBadgeText,
-          style = MaterialTheme.typography.labelMedium,
-          fontWeight = FontWeight.Bold,
-          color = phaseColor,
-          letterSpacing = 0.5.sp,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis
-        )
+        FluidAnimatedValue(targetState = phaseBadgeText) { text ->
+          Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = phaseColor,
+            letterSpacing = 0.5.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
       }
     }
 
@@ -310,21 +375,34 @@ fun IntervalScreen(
       Spacer(modifier = Modifier.height(8.dp))
       val stepSound = currentStep.backgroundSound
       val isPlayingStepSound = intervalState.isRunning && stepSound != null && settings.isWhiteNoisePlaying
-
-      Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = if (isPlayingStepSound) {
-          NeonGreen.copy(alpha = 0.14f)
+      val soundPillInteraction = remember { MutableInteractionSource() }
+      val soundPillBg by animateColorAsState(
+        targetValue = if (isPlayingStepSound) {
+          MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
         } else {
           MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         },
-        border = BorderStroke(
-          1.dp,
-          if (isPlayingStepSound) NeonGreen.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-        ),
+        animationSpec = tween(300),
+        label = "interval_sound_bg"
+      )
+      val soundPillBorder by animateColorAsState(
+        targetValue = if (isPlayingStepSound) MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+        animationSpec = tween(300),
+        label = "interval_sound_border"
+      )
+
+      Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = soundPillBg,
+        border = BorderStroke(1.dp, soundPillBorder),
         modifier = Modifier
+          .fluidPressScale(soundPillInteraction)
+          .animateContentSize()
           .clip(RoundedCornerShape(18.dp))
-          .clickable { showWhiteNoiseSheet = true }
+          .clickable(
+            interactionSource = soundPillInteraction,
+            indication = LocalIndication.current
+          ) { showWhiteNoiseSheet = true }
           .testTag("interval_sound_status_pill")
       ) {
         Row(
@@ -333,7 +411,7 @@ fun IntervalScreen(
           horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
           if (isPlayingStepSound) {
-            AnimatedAudioWaves(color = NeonGreen)
+            AnimatedAudioWaves(color = MaterialTheme.colorScheme.secondary)
           } else {
             Icon(
               imageVector = if (stepSound != null) Icons.Default.Headphones else Icons.AutoMirrored.Filled.VolumeOff,
@@ -350,7 +428,7 @@ fun IntervalScreen(
             },
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
-            color = if (isPlayingStepSound) NeonGreen else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (isPlayingStepSound) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
           )
         }
       }
@@ -379,19 +457,41 @@ fun IntervalScreen(
         config.steps.forEachIndexed { idx, step ->
           val isActive = idx == intervalState.currentStepIndex && intervalState.phase != IntervalPhase.FINISHED
           val isCompleted = intervalState.phase == IntervalPhase.FINISHED || idx < intervalState.currentStepIndex
-          val stepColor = Color(step.colorHex)
+          val stepColor = resolveThemeAccentColor(step.colorHex, colorScheme)
+          val stepInteraction = remember(step.id) { MutableInteractionSource() }
+          val stepScale by animateFloatAsState(
+            targetValue = if (isActive) 1.03f else 1f,
+            animationSpec = spring(
+              dampingRatio = Spring.DampingRatioMediumBouncy,
+              stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "step_scale_$idx"
+          )
+          val stepBg by animateColorAsState(
+            targetValue = if (isActive) stepColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            animationSpec = tween(280),
+            label = "step_bg_$idx"
+          )
 
           Surface(
             shape = RoundedCornerShape(12.dp),
-            color = if (isActive) stepColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            color = stepBg,
             border = BorderStroke(
               width = if (isActive) 1.5.dp else 1.dp,
               color = if (isActive) stepColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
             ),
             modifier = Modifier
               .widthIn(min = 116.dp, max = 160.dp)
+              .graphicsLayer {
+                scaleX = stepScale
+                scaleY = stepScale
+              }
+              .fluidPressScale(stepInteraction)
               .clip(RoundedCornerShape(12.dp))
-              .clickable { viewModel.jumpToIntervalStep(idx) }
+              .clickable(
+                interactionSource = stepInteraction,
+                indication = LocalIndication.current
+              ) { viewModel.jumpToIntervalStep(idx) }
               .testTag("interval_timeline_step_$idx")
           ) {
             Column(
@@ -406,7 +506,7 @@ fun IntervalScreen(
                   Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = "Completed",
-                    tint = NeonGreen,
+                    tint = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.size(12.dp)
                   )
                 } else {
@@ -474,9 +574,11 @@ fun IntervalScreen(
       // Reset button
       FilledTonalButton(
         onClick = { viewModel.resetInterval() },
+        interactionSource = resetInteraction,
         shape = CircleShape,
         modifier = Modifier
           .size(58.dp)
+          .fluidPressScale(resetInteraction)
           .testTag("interval_reset_btn"),
         contentPadding = PaddingValues(0.dp)
       ) {
@@ -495,27 +597,34 @@ fun IntervalScreen(
         onClick = {
           if (intervalState.isRunning) viewModel.pauseInterval() else viewModel.startInterval()
         },
+        interactionSource = startPauseInteraction,
         colors = ButtonDefaults.buttonColors(
-          containerColor = if (intervalState.isRunning) NeonCoral else phaseColor,
-          contentColor = if (intervalState.isRunning) Color.White else Color(0xFF00363D)
+          containerColor = startBtnBgColor,
+          contentColor = startBtnContentColor
         ),
         shape = RoundedCornerShape(32.dp),
         modifier = Modifier
           .height(60.dp)
           .width(140.dp)
+          .fluidPulseHalo(color = startBtnBgColor, isActive = intervalState.isRunning)
+          .fluidPressScale(startPauseInteraction)
           .testTag("interval_start_pause_btn")
       ) {
-        Icon(
-          imageVector = if (intervalState.isRunning) Icons.Default.Pause else Icons.Default.PlayArrow,
-          contentDescription = if (intervalState.isRunning) "Pause" else "Start",
-          modifier = Modifier.size(26.dp)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-          text = if (intervalState.isRunning) "PAUSE" else "START",
-          fontWeight = FontWeight.Bold,
-          fontSize = 16.sp
-        )
+        FluidAnimatedValue(targetState = intervalState.isRunning) { running ->
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+              imageVector = if (running) Icons.Default.Pause else Icons.Default.PlayArrow,
+              contentDescription = if (running) "Pause" else "Start",
+              modifier = Modifier.size(26.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              text = if (running) "PAUSE" else "START",
+              fontWeight = FontWeight.Bold,
+              fontSize = 16.sp
+            )
+          }
+        }
       }
 
       Spacer(modifier = Modifier.width(18.dp))
@@ -524,9 +633,11 @@ fun IntervalScreen(
         // Skip to Next Interval Step
         FilledTonalButton(
           onClick = { viewModel.skipToNextIntervalStep() },
+          interactionSource = secondaryActionInteraction,
           shape = CircleShape,
           modifier = Modifier
             .size(58.dp)
+            .fluidPressScale(secondaryActionInteraction)
             .testTag("interval_skip_btn"),
           contentPadding = PaddingValues(0.dp)
         ) {
@@ -541,9 +652,11 @@ fun IntervalScreen(
         // Quick Settings/Configure
         FilledTonalButton(
           onClick = { showQuickCustomDialog = true },
+          interactionSource = secondaryActionInteraction,
           shape = CircleShape,
           modifier = Modifier
             .size(58.dp)
+            .fluidPressScale(secondaryActionInteraction)
             .testTag("interval_custom_btn"),
           contentPadding = PaddingValues(0.dp)
         ) {

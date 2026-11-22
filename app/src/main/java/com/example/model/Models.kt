@@ -23,6 +23,7 @@ data class TimerItem(
   val remainingMillis: Long,
   val isRunning: Boolean = false,
   val isFinished: Boolean = false,
+  val hasStarted: Boolean = false,
   val colorHex: Long = 0xFF00E5FF
 ) {
   val progress: Float

@@ -1,40 +1,58 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -60,6 +78,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -68,13 +87,13 @@ import androidx.compose.ui.unit.sp
 import com.example.model.TimeFormatter
 import com.example.ui.components.AnimatedAudioWaves
 import com.example.ui.components.CircularProgressTimerArc
+import com.example.ui.components.FluidAnimatedValue
 import com.example.ui.components.NumberStepper
 import com.example.ui.components.WhiteNoiseSheet
-import com.example.ui.theme.NeonAmber
-import com.example.ui.theme.NeonCoral
-import com.example.ui.theme.NeonCyan
-import com.example.ui.theme.NeonGreen
+import com.example.ui.components.fluidPressScale
+import com.example.ui.components.fluidPulseHalo
 import com.example.ui.theme.RobotoMonoFontFamily
+import com.example.ui.theme.resolveThemeAccentColor
 import com.example.viewmodel.ChronoViewModel
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -94,369 +113,558 @@ fun TimerScreen(
 
   if (activeTimer == null) return
 
-  val timerColor = Color(activeTimer.colorHex)
+  val colorScheme = MaterialTheme.colorScheme
+  val timerColor = resolveThemeAccentColor(activeTimer.colorHex, colorScheme)
   val isRunning = activeTimer.isRunning
+  val isFocusMode = activeTimer.hasStarted
   val currentTotalSec = (activeTimer.initialDurationMillis / 1000L).toInt()
+  val quickAddSec = settings.quickAddSeconds
+  val quickAddLabel = remember(quickAddSec) { formatQuickAddButtonLabel(quickAddSec) }
 
-  Column(
-    modifier = modifier
-      .fillMaxSize()
-      .verticalScroll(rememberScrollState())
-      .padding(horizontal = 20.dp, vertical = 8.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.Center
-  ) {
-    // 1. Sleek Focus Noise Pill (Distraction-masking audio)
-    Surface(
-      shape = RoundedCornerShape(20.dp),
-      color = if (settings.isWhiteNoisePlaying)
-        NeonGreen.copy(alpha = 0.15f)
-      else if (settings.whiteNoiseEnabled)
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-      else
-        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-      border = androidx.compose.foundation.BorderStroke(
-        1.dp,
-        if (settings.isWhiteNoisePlaying) NeonGreen else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-      ),
-      modifier = Modifier
-        .clip(RoundedCornerShape(20.dp))
-        .clickable { showWhiteNoiseSheet = true }
-        .testTag("timer_white_noise_card")
-    ) {
-      Row(
-        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+  AnimatedContent(
+    targetState = isFocusMode,
+    transitionSpec = {
+      ContentTransform(
+        targetContentEnter = fadeIn(tween(340, easing = FastOutSlowInEasing)) +
+          scaleIn(
+            initialScale = 0.92f,
+            animationSpec = spring(
+              dampingRatio = Spring.DampingRatioMediumBouncy,
+              stiffness = Spring.StiffnessMediumLow
+            )
+          ),
+        initialContentExit = fadeOut(tween(240)) +
+          scaleOut(targetScale = 0.94f, animationSpec = tween(240))
+      )
+    },
+    label = "timer_focus_mode_transition"
+  ) { focusActive ->
+    if (focusActive) {
+      val focusButtonColor by animateColorAsState(
+        targetValue = if (isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        animationSpec = tween(350, easing = FastOutSlowInEasing),
+        label = "focus_btn_color"
+      )
+      val focusContentColor by animateColorAsState(
+        targetValue = if (isRunning) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
+        animationSpec = tween(350, easing = FastOutSlowInEasing),
+        label = "focus_btn_content_color"
+      )
+      val pauseInteraction = remember { MutableInteractionSource() }
+      val resetInteraction = remember { MutableInteractionSource() }
+      val addInteraction = remember { MutableInteractionSource() }
+
+      // Full-screen distraction-free mode:
+      // Only keep the countdown time, pause/resume button, add time button, and reset button (only when paused).
+      Column(
+        modifier = modifier
+          .fillMaxSize()
+          .windowInsetsPadding(WindowInsets.safeDrawing)
+          .verticalScroll(rememberScrollState())
+          .padding(horizontal = 24.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
       ) {
-        if (settings.isWhiteNoisePlaying) {
-          AnimatedAudioWaves(color = NeonGreen)
-        } else {
-          Icon(
-            imageVector = Icons.Default.Headphones,
-            contentDescription = null,
-            tint = if (settings.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(16.dp)
-          )
-        }
-
-        Text(
-          text = if (settings.isWhiteNoisePlaying)
-            "Study Noise: Active"
-          else if (settings.whiteNoiseEnabled)
-            "Study Noise: On"
-          else
-            "Study Noise: Off",
-          style = MaterialTheme.typography.labelMedium,
-          fontWeight = FontWeight.SemiBold,
-          color = if (settings.isWhiteNoisePlaying) NeonGreen else MaterialTheme.colorScheme.onSurface
+        CircularProgressTimerArc(
+          progress = activeTimer.progress,
+          remainingMillis = activeTimer.remainingMillis,
+          isRunning = isRunning,
+          timerColor = if (isRunning) timerColor else MaterialTheme.colorScheme.primary,
+          size = 280.dp,
+          showStatusLabel = false
         )
 
-        IconButton(
-          onClick = { viewModel.toggleWhiteNoise() },
-          modifier = Modifier.size(24.dp).testTag("timer_white_noise_quick_switch")
+        Spacer(modifier = Modifier.height(48.dp))
+
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(
+              animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+              )
+            ),
+          horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
+          verticalAlignment = Alignment.CenterVertically
         ) {
-          Icon(
-            imageVector = Icons.Default.Tune,
-            contentDescription = "Configure Focus Noise",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(14.dp)
-          )
+          // Reset button ONLY appears after the timer is paused
+          AnimatedVisibility(
+            visible = !isRunning,
+            enter = fadeIn(tween(260)) +
+              expandHorizontally(
+                animationSpec = spring(
+                  dampingRatio = Spring.DampingRatioMediumBouncy,
+                  stiffness = Spring.StiffnessMediumLow
+                )
+              ) +
+              scaleIn(initialScale = 0.85f),
+            exit = fadeOut(tween(180)) +
+              shrinkHorizontally(animationSpec = tween(200)) +
+              scaleOut(targetScale = 0.85f)
+          ) {
+            FilledTonalButton(
+              onClick = { viewModel.resetTimer(activeTimer.id) },
+              interactionSource = resetInteraction,
+              shape = RoundedCornerShape(32.dp),
+              contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
+              modifier = Modifier
+                .height(60.dp)
+                .fluidPressScale(resetInteraction)
+                .testTag("timer_reset_btn")
+            ) {
+              Text(
+                text = "RESET",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp
+              )
+            }
+          }
+
+          // Pause / Resume button (clean minimal control without distracting icons)
+          Button(
+            onClick = {
+              if (isRunning) viewModel.pauseTimer(activeTimer.id)
+              else viewModel.startTimer(activeTimer.id)
+            },
+            interactionSource = pauseInteraction,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = focusButtonColor,
+              contentColor = focusContentColor
+            ),
+            shape = RoundedCornerShape(32.dp),
+            modifier = Modifier
+              .height(60.dp)
+              .widthIn(min = 136.dp)
+              .fluidPulseHalo(color = focusButtonColor, isActive = isRunning)
+              .fluidPressScale(pauseInteraction)
+              .testTag("timer_start_pause_btn")
+          ) {
+            FluidAnimatedValue(targetState = isRunning) { running ->
+              Text(
+                text = if (running) "PAUSE" else "RESUME",
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+              )
+            }
+          }
+
+          // Add time button (tapping adds the configured quick-add increment)
+          FilledTonalButton(
+            onClick = { viewModel.addTimeToTimer(activeTimer.id, quickAddSec.toLong()) },
+            interactionSource = addInteraction,
+            shape = RoundedCornerShape(32.dp),
+            colors = ButtonDefaults.filledTonalButtonColors(
+              containerColor = MaterialTheme.colorScheme.secondaryContainer,
+              contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+            ),
+            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp),
+            modifier = Modifier
+              .height(60.dp)
+              .widthIn(min = 76.dp)
+              .fluidPressScale(addInteraction)
+              .testTag("timer_add_new_btn")
+          ) {
+            Text(
+              text = quickAddLabel.replace("\n", " "),
+              fontFamily = RobotoMonoFontFamily,
+              fontWeight = FontWeight.Bold,
+              fontSize = 15.sp,
+              textAlign = TextAlign.Center
+            )
+          }
         }
       }
-    }
+    } else {
+      val noisePillInteraction = remember { MutableInteractionSource() }
+      val dialTapInteraction = remember { MutableInteractionSource() }
+      val startBtnInteraction = remember { MutableInteractionSource() }
+      val quickAddBtnInteraction = remember { MutableInteractionSource() }
 
-    // Active Timers Switcher (when multiple timers exist, e.g. started from Presets)
-    if (timerState.timers.size > 1) {
-      Spacer(modifier = Modifier.height(12.dp))
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.Center
+      val noiseContainerColor by animateColorAsState(
+        targetValue = if (settings.isWhiteNoisePlaying) {
+          MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+        } else if (settings.whiteNoiseEnabled) {
+          MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+        } else {
+          MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        },
+        animationSpec = tween(350),
+        label = "noise_pill_container"
+      )
+      val noiseBorderColor by animateColorAsState(
+        targetValue = if (settings.isWhiteNoisePlaying) {
+          MaterialTheme.colorScheme.secondary
+        } else {
+          MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+        },
+        animationSpec = tween(350),
+        label = "noise_pill_border"
+      )
+      val animatedBadgeColor by animateColorAsState(
+        targetValue = timerColor,
+        animationSpec = tween(400),
+        label = "badge_timer_color"
+      )
+
+      // Normal setup mode (before starting or after resetting)
+      Column(
+        modifier = modifier
+          .fillMaxSize()
+          .verticalScroll(rememberScrollState())
+          .padding(horizontal = 20.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
       ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          timerState.timers.forEach { timer ->
-            val isSelected = timer.id == activeTimer.id
-            val chipColor = Color(timer.colorHex)
-            Surface(
-              shape = RoundedCornerShape(16.dp),
-              color = if (isSelected) chipColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-              border = BorderStroke(
-                width = if (isSelected) 1.5.dp else 1.dp,
-                color = if (isSelected) chipColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-              ),
-              modifier = Modifier
-                .clip(RoundedCornerShape(16.dp))
-                .clickable { viewModel.selectTimer(timer.id) }
-                .testTag("active_timer_chip_${timer.id}")
+        // 1. Sleek Focus Noise Pill (Distraction-masking audio)
+        Surface(
+          shape = RoundedCornerShape(20.dp),
+          color = noiseContainerColor,
+          border = BorderStroke(1.dp, noiseBorderColor),
+          modifier = Modifier
+            .fluidPressScale(noisePillInteraction)
+            .animateContentSize(
+              animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+              )
+            )
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(
+              interactionSource = noisePillInteraction,
+              indication = LocalIndication.current
+            ) { showWhiteNoiseSheet = true }
+            .testTag("timer_white_noise_card")
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            if (settings.isWhiteNoisePlaying) {
+              AnimatedAudioWaves(color = MaterialTheme.colorScheme.secondary)
+            } else {
+              Icon(
+                imageVector = Icons.Default.Headphones,
+                contentDescription = null,
+                tint = if (settings.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+              )
+            }
+
+            Text(
+              text = if (settings.isWhiteNoisePlaying)
+                "Study Noise: Active"
+              else if (settings.whiteNoiseEnabled)
+                "Study Noise: On"
+              else
+                "Study Noise: Off",
+              style = MaterialTheme.typography.labelMedium,
+              fontWeight = FontWeight.SemiBold,
+              color = if (settings.isWhiteNoisePlaying) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+            )
+
+            IconButton(
+              onClick = { viewModel.toggleWhiteNoise() },
+              modifier = Modifier.size(24.dp).testTag("timer_white_noise_quick_switch")
             ) {
-              Row(
-                modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(7.dp)
-                    .clip(CircleShape)
-                    .background(if (timer.isRunning) NeonGreen else chipColor)
-                )
-                Text(
-                  text = "${timer.title} • ${TimeFormatter.formatTimer(timer.remainingMillis)}",
-                  fontSize = 12.sp,
-                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                  color = if (isSelected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Box(
-                  modifier = Modifier
-                    .size(20.dp)
-                    .clip(CircleShape)
-                    .clickable { viewModel.deleteTimer(timer.id) },
-                  contentAlignment = Alignment.Center
-                ) {
-                  Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "Remove ${timer.title}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(12.dp)
+              Icon(
+                imageVector = Icons.Default.Tune,
+                contentDescription = "Configure Focus Noise",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp)
+              )
+            }
+          }
+        }
+
+        // Active Timers Switcher (when multiple timers exist, e.g. started from Presets)
+        AnimatedVisibility(
+          visible = timerState.timers.size > 1,
+          enter = fadeIn(tween(240)) + scaleIn(initialScale = 0.94f),
+          exit = fadeOut(tween(180)) + scaleOut(targetScale = 0.94f)
+        ) {
+          Column {
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .animateContentSize(),
+              horizontalArrangement = Arrangement.Center
+            ) {
+              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                timerState.timers.forEach { timer ->
+                  val isSelected = timer.id == activeTimer.id
+                  val chipColor = resolveThemeAccentColor(timer.colorHex, colorScheme)
+                  val chipInteraction = remember(timer.id) { MutableInteractionSource() }
+                  val chipBg by animateColorAsState(
+                    targetValue = if (isSelected) chipColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    animationSpec = tween(250),
+                    label = "chip_bg_${timer.id}"
                   )
+                  Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = chipBg,
+                    border = BorderStroke(
+                      width = if (isSelected) 1.5.dp else 1.dp,
+                      color = if (isSelected) chipColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier
+                      .fluidPressScale(chipInteraction)
+                      .clip(RoundedCornerShape(16.dp))
+                      .clickable(
+                        interactionSource = chipInteraction,
+                        indication = LocalIndication.current
+                      ) { viewModel.selectTimer(timer.id) }
+                      .testTag("active_timer_chip_${timer.id}")
+                  ) {
+                    Row(
+                      modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                      Box(
+                        modifier = Modifier
+                          .size(7.dp)
+                          .clip(CircleShape)
+                          .background(if (timer.isRunning) MaterialTheme.colorScheme.secondary else chipColor)
+                      )
+                      Text(
+                        text = "${timer.title} • ${TimeFormatter.formatTimer(timer.remainingMillis)}",
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+                      Box(
+                        modifier = Modifier
+                          .size(20.dp)
+                          .clip(CircleShape)
+                          .clickable { viewModel.deleteTimer(timer.id) },
+                        contentAlignment = Alignment.Center
+                      ) {
+                        Icon(
+                          imageVector = Icons.Default.Close,
+                          contentDescription = "Remove ${timer.title}",
+                          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                          modifier = Modifier.size(12.dp)
+                        )
+                      }
+                    }
+                  }
                 }
               }
             }
           }
         }
-      }
-    }
 
-    Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-    // Active Timer Title Badge
-    Surface(
-      shape = RoundedCornerShape(14.dp),
-      color = timerColor.copy(alpha = 0.12f),
-      border = BorderStroke(1.dp, timerColor.copy(alpha = 0.45f))
-    ) {
-      Row(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-      ) {
-        Box(
-          modifier = Modifier
-            .size(7.dp)
-            .clip(CircleShape)
-            .background(timerColor)
-        )
-        Text(
-          text = activeTimer.title.uppercase(),
-          style = MaterialTheme.typography.labelMedium,
-          fontWeight = FontWeight.Bold,
-          color = timerColor,
-          letterSpacing = 0.6.sp
-        )
-      }
-    }
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // 2. Minimalist Dynamic Countdown Arc (Tap to set duration directly)
-    Box(
-      contentAlignment = Alignment.Center,
-      modifier = Modifier
-        .clip(CircleShape)
-        .clickable {
-          if (!isRunning) showEditDurationDialog = true
-        }
-    ) {
-      CircularProgressTimerArc(
-        progress = activeTimer.progress,
-        remainingMillis = activeTimer.remainingMillis,
-        isRunning = isRunning,
-        timerColor = if (isRunning) timerColor else MaterialTheme.colorScheme.primary,
-        size = 240.dp
-      )
-    }
-
-    Spacer(modifier = Modifier.height(20.dp))
-
-    // 3. Dynamic Quick Study Preset Pills
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.Center
-    ) {
-      val presets = listOf(
-        15 * 60 to "15m",
-        25 * 60 to "25m",
-        45 * 60 to "45m",
-        50 * 60 to "50m",
-        60 * 60 to "60m"
-      )
-
-      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        presets.forEach { (sec, label) ->
-          val isSelected = currentTotalSec == sec
-          FilterChip(
-            selected = isSelected,
-            onClick = {
-              viewModel.updateCurrentTimerDuration(activeTimer.id, sec.toLong())
-            },
-            label = {
-              Text(
-                text = label,
-                fontSize = 13.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-              )
-            },
-            shape = RoundedCornerShape(16.dp),
-            colors = FilterChipDefaults.filterChipColors(
-              selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-              selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-            ),
-            border = FilterChipDefaults.filterChipBorder(
-              enabled = true,
-              selected = isSelected,
-              borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-              selectedBorderColor = MaterialTheme.colorScheme.primary
+        // Active Timer Title Badge
+        Surface(
+          shape = RoundedCornerShape(14.dp),
+          color = animatedBadgeColor.copy(alpha = 0.12f),
+          border = BorderStroke(1.dp, animatedBadgeColor.copy(alpha = 0.45f))
+        ) {
+          Row(
+            modifier = Modifier
+              .padding(horizontal = 12.dp, vertical = 4.dp)
+              .animateContentSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Box(
+              modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(animatedBadgeColor)
             )
+            FluidAnimatedValue(targetState = activeTimer.title.uppercase()) { titleText ->
+              Text(
+                text = titleText,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = animatedBadgeColor,
+                letterSpacing = 0.6.sp
+              )
+            }
+          }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 2. Minimalist Dynamic Countdown Arc (Tap to set duration directly)
+        Box(
+          contentAlignment = Alignment.Center,
+          modifier = Modifier
+            .fluidPressScale(dialTapInteraction, pressedScale = 0.96f)
+            .clip(CircleShape)
+            .clickable(
+              interactionSource = dialTapInteraction,
+              indication = LocalIndication.current
+            ) { showEditDurationDialog = true }
+        ) {
+          CircularProgressTimerArc(
+            progress = activeTimer.progress,
+            remainingMillis = activeTimer.remainingMillis,
+            isRunning = false,
+            timerColor = MaterialTheme.colorScheme.primary,
+            size = 240.dp
           )
         }
 
-        // Custom time button
-        FilterChip(
-          selected = false,
-          onClick = { showEditDurationDialog = true },
-          label = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(
-                imageVector = Icons.Default.Edit,
-                contentDescription = null,
-                modifier = Modifier.size(12.dp)
-              )
-              Spacer(modifier = Modifier.width(4.dp))
-              Text("Custom", fontSize = 13.sp)
-            }
-          },
-          shape = RoundedCornerShape(16.dp)
-        )
-      }
-    }
+        Spacer(modifier = Modifier.height(20.dp))
 
-    Spacer(modifier = Modifier.height(24.dp))
-
-    // 4. Primary Minimalist Action Controls
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.Center,
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      // Reset button
-      FilledTonalButton(
-        onClick = { viewModel.resetTimer(activeTimer.id) },
-        shape = CircleShape,
-        modifier = Modifier
-          .size(58.dp)
-          .testTag("timer_reset_btn"),
-        contentPadding = PaddingValues(0.dp)
-      ) {
-        Icon(
-          imageVector = Icons.Default.Refresh,
-          contentDescription = "Reset Timer",
-          tint = MaterialTheme.colorScheme.onSurface,
-          modifier = Modifier.size(22.dp)
-        )
-      }
-
-      Spacer(modifier = Modifier.width(18.dp))
-
-      // Start / Pause Primary Button
-      Button(
-        onClick = {
-          if (isRunning) viewModel.pauseTimer(activeTimer.id)
-          else viewModel.startTimer(activeTimer.id)
-        },
-        colors = ButtonDefaults.buttonColors(
-          containerColor = if (isRunning) NeonCoral else MaterialTheme.colorScheme.primary,
-          contentColor = if (isRunning) Color.White else Color(0xFF00363D)
-        ),
-        shape = RoundedCornerShape(32.dp),
-        modifier = Modifier
-          .height(60.dp)
-          .width(140.dp)
-          .testTag("timer_start_pause_btn")
-      ) {
-        Icon(
-          imageVector = if (isRunning) Icons.Default.Pause else Icons.Default.PlayArrow,
-          contentDescription = if (isRunning) "Pause" else "Start",
-          modifier = Modifier.size(26.dp)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-          text = if (isRunning) "PAUSE" else "START",
-          fontWeight = FontWeight.Bold,
-          fontSize = 16.sp
-        )
-      }
-
-      Spacer(modifier = Modifier.width(18.dp))
-
-      // Customizable Quick Add Time Button:
-      // - Before timer starts: tap to customize minutes & seconds
-      // - After timer starts (running or paused mid-session): tap to add time, long-press to customize
-      val quickAddSec = settings.quickAddSeconds
-      val quickAddLabel = remember(quickAddSec) { formatQuickAddButtonLabel(quickAddSec) }
-      val hasTimerStarted = isRunning ||
-        (activeTimer.remainingMillis < activeTimer.initialDurationMillis && !activeTimer.isFinished)
-
-      Box(contentAlignment = Alignment.Center) {
-        Surface(
-          shape = CircleShape,
-          color = MaterialTheme.colorScheme.secondaryContainer,
-          contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-          border = if (!hasTimerStarted) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-          } else {
-            null
-          },
+        // 3. Dynamic Quick Study Preset Pills
+        Row(
           modifier = Modifier
-            .size(58.dp)
-            .clip(CircleShape)
-            .combinedClickable(
-              onClick = {
-                if (hasTimerStarted) {
-                  viewModel.addTimeToTimer(activeTimer.id, quickAddSec.toLong())
-                } else {
-                  showEditQuickAddDialog = true
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.Center
+        ) {
+          val presets = listOf(
+            15 * 60 to "15m",
+            25 * 60 to "25m",
+            45 * 60 to "45m",
+            50 * 60 to "50m",
+            60 * 60 to "60m"
+          )
+
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            presets.forEach { (sec, label) ->
+              val isSelected = currentTotalSec == sec
+              val chipInteraction = remember(sec) { MutableInteractionSource() }
+              FilterChip(
+                selected = isSelected,
+                onClick = {
+                  viewModel.updateCurrentTimerDuration(activeTimer.id, sec.toLong())
+                },
+                interactionSource = chipInteraction,
+                label = {
+                  Text(
+                    text = label,
+                    fontSize = 13.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                  )
+                },
+                shape = RoundedCornerShape(16.dp),
+                colors = FilterChipDefaults.filterChipColors(
+                  selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                  selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                border = FilterChipDefaults.filterChipBorder(
+                  enabled = true,
+                  selected = isSelected,
+                  borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                  selectedBorderColor = MaterialTheme.colorScheme.primary
+                ),
+                modifier = Modifier.fluidPressScale(chipInteraction)
+              )
+            }
+
+            // Custom time button
+            val customChipInteraction = remember { MutableInteractionSource() }
+            FilterChip(
+              selected = false,
+              onClick = { showEditDurationDialog = true },
+              interactionSource = customChipInteraction,
+              label = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp)
+                  )
+                  Spacer(modifier = Modifier.width(4.dp))
+                  Text("Custom", fontSize = 13.sp)
                 }
               },
-              onLongClick = { showEditQuickAddDialog = true }
+              shape = RoundedCornerShape(16.dp),
+              modifier = Modifier.fluidPressScale(customChipInteraction)
             )
-            .testTag("timer_add_new_btn")
+          }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 4. Primary Setup Action Controls (Reset only appears after timer is started & paused)
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.Center,
+          verticalAlignment = Alignment.CenterVertically
         ) {
-          Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+          // Start Primary Button
+          Button(
+            onClick = { viewModel.startTimer(activeTimer.id) },
+            interactionSource = startBtnInteraction,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary,
+              contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            shape = RoundedCornerShape(32.dp),
+            modifier = Modifier
+              .height(60.dp)
+              .width(148.dp)
+              .fluidPulseHalo(color = MaterialTheme.colorScheme.primary, isActive = true)
+              .fluidPressScale(startBtnInteraction)
+              .testTag("timer_start_pause_btn")
           ) {
-            Text(
-              text = quickAddLabel,
-              fontFamily = RobotoMonoFontFamily,
-              fontWeight = FontWeight.Bold,
-              fontSize = if (quickAddLabel.contains("\n")) 11.sp else 14.sp,
-              lineHeight = 13.sp,
-              textAlign = TextAlign.Center,
-              color = MaterialTheme.colorScheme.onSurface
+            Icon(
+              imageVector = Icons.Default.PlayArrow,
+              contentDescription = "Start",
+              modifier = Modifier.size(26.dp)
             )
-            if (!hasTimerStarted) {
-              Spacer(modifier = Modifier.height(1.dp))
-              Icon(
-                imageVector = Icons.Default.Edit,
-                contentDescription = "Customize quick-add time",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(11.dp)
-              )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              text = "START",
+              fontWeight = FontWeight.Bold,
+              fontSize = 16.sp
+            )
+          }
+
+          Spacer(modifier = Modifier.width(18.dp))
+
+          // Customizable Quick Add Time Button (tap before start to customize minutes & seconds)
+          Box(contentAlignment = Alignment.Center) {
+            Surface(
+              shape = CircleShape,
+              color = MaterialTheme.colorScheme.secondaryContainer,
+              contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+              modifier = Modifier
+                .size(58.dp)
+                .fluidPressScale(quickAddBtnInteraction, pressedScale = 0.90f)
+                .clip(CircleShape)
+                .combinedClickable(
+                  interactionSource = quickAddBtnInteraction,
+                  indication = LocalIndication.current,
+                  onClick = { showEditQuickAddDialog = true },
+                  onLongClick = { showEditQuickAddDialog = true }
+                )
+                .testTag("timer_add_new_btn")
+            ) {
+              Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+              ) {
+                Text(
+                  text = quickAddLabel,
+                  fontFamily = RobotoMonoFontFamily,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = if (quickAddLabel.contains("\n")) 11.sp else 14.sp,
+                  lineHeight = 13.sp,
+                  textAlign = TextAlign.Center,
+                  color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(1.dp))
+                Icon(
+                  imageVector = Icons.Default.Edit,
+                  contentDescription = "Customize quick-add time",
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(11.dp)
+                )
+              }
             }
           }
         }
@@ -500,15 +708,48 @@ fun TimerScreen(
   if (timerState.ringingTimerId != null) {
     val ringingTimer = timerState.timers.find { it.id == timerState.ringingTimerId }
     val quickAddSec = settings.quickAddSeconds
+    val alarmTransition = rememberInfiniteTransition(label = "alarm_ring_pulse")
+    val alarmScale by alarmTransition.animateFloat(
+      initialValue = 0.92f,
+      targetValue = 1.14f,
+      animationSpec = infiniteRepeatable(
+        animation = tween(550, easing = FastOutSlowInEasing),
+        repeatMode = RepeatMode.Reverse
+      ),
+      label = "alarm_scale"
+    )
+    val alarmTilt by alarmTransition.animateFloat(
+      initialValue = -10f,
+      targetValue = 10f,
+      animationSpec = infiniteRepeatable(
+        animation = tween(220, easing = FastOutSlowInEasing),
+        repeatMode = RepeatMode.Reverse
+      ),
+      label = "alarm_tilt"
+    )
+
     AlertDialog(
       onDismissRequest = { viewModel.dismissAlarm() },
       icon = {
-        Icon(
-          imageVector = Icons.Default.NotificationsActive,
-          contentDescription = "Study Session Complete",
-          tint = NeonAmber,
-          modifier = Modifier.size(40.dp)
-        )
+        Box(
+          modifier = Modifier
+            .size(56.dp)
+            .fluidPulseHalo(color = MaterialTheme.colorScheme.tertiary, isActive = true),
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = Icons.Default.NotificationsActive,
+            contentDescription = "Study Session Complete",
+            tint = MaterialTheme.colorScheme.tertiary,
+            modifier = Modifier
+              .size(40.dp)
+              .graphicsLayer {
+                scaleX = alarmScale
+                scaleY = alarmScale
+                rotationZ = alarmTilt
+              }
+          )
+        }
       },
       title = {
         Text(
@@ -526,9 +767,12 @@ fun TimerScreen(
       confirmButton = {
         Button(
           onClick = { viewModel.dismissAlarm() },
-          colors = ButtonDefaults.buttonColors(containerColor = NeonCyan)
+          colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+          )
         ) {
-          Text("Done", color = Color(0xFF00363D), fontWeight = FontWeight.Bold)
+          Text("Done", fontWeight = FontWeight.Bold)
         }
       },
       dismissButton = {
@@ -637,7 +881,7 @@ fun EditQuickAddDialog(
           },
           style = MaterialTheme.typography.labelMedium,
           fontWeight = FontWeight.SemiBold,
-          color = if (total > 0) MaterialTheme.colorScheme.primary else NeonCoral
+          color = if (total > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
         )
       }
     },

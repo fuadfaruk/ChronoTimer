@@ -1,87 +1,143 @@
 package com.example.ui.theme
 
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-  primary = NeonCyan,
-  onPrimary = Color(0xFF00363D),
-  primaryContainer = Color(0xFF004F58),
-  onPrimaryContainer = Color(0xFF8BF3FF),
+enum class AppThemeMode(val label: String) {
+  SYSTEM("System"),
+  LIGHT("Light"),
+  DARK("Dark")
+}
 
-  secondary = NeonGreen,
-  onSecondary = Color(0xFF003919),
-  secondaryContainer = Color(0xFF005327),
-  onSecondaryContainer = Color(0xFF70FF9C),
+private val FallbackDarkColorScheme = darkColorScheme(
+  primary = PrimaryDark,
+  onPrimary = OnPrimaryDark,
+  primaryContainer = PrimaryContainerDark,
+  onPrimaryContainer = OnPrimaryContainerDark,
 
-  tertiary = NeonAmber,
-  onTertiary = Color(0xFF492900),
-  tertiaryContainer = Color(0xFF693C00),
-  onTertiaryContainer = Color(0xFFFFDCBE),
+  secondary = SecondaryDark,
+  onSecondary = OnSecondaryDark,
+  secondaryContainer = SecondaryContainerDark,
+  onSecondaryContainer = OnSecondaryContainerDark,
+
+  tertiary = TertiaryDark,
+  onTertiary = OnTertiaryDark,
+  tertiaryContainer = TertiaryContainerDark,
+  onTertiaryContainer = OnTertiaryContainerDark,
 
   background = BackgroundDark,
-  onBackground = TextPrimaryDark,
+  onBackground = OnBackgroundDark,
 
   surface = SurfaceDark,
-  onSurface = TextPrimaryDark,
+  onSurface = OnSurfaceDark,
 
   surfaceVariant = SurfaceVariantDark,
-  onSurfaceVariant = TextSecondaryDark,
+  onSurfaceVariant = OnSurfaceVariantDark,
 
-  outline = SurfaceBorderDark,
-  outlineVariant = Color(0xFF1E2838),
+  outline = OutlineDark,
+  outlineVariant = OutlineVariantDark,
 
-  error = NeonCoral,
-  onError = Color.White
+  error = ErrorDark,
+  onError = OnErrorDark,
+  errorContainer = ErrorContainerDark,
+  onErrorContainer = OnErrorContainerDark
 )
 
-private val LightColorScheme = lightColorScheme(
-  primary = Color(0xFF00838F),
-  onPrimary = Color.White,
-  primaryContainer = Color(0xFFB2EBF2),
-  onPrimaryContainer = Color(0xFF004D40),
+private val FallbackLightColorScheme = lightColorScheme(
+  primary = PrimaryLight,
+  onPrimary = OnPrimaryLight,
+  primaryContainer = PrimaryContainerLight,
+  onPrimaryContainer = OnPrimaryContainerLight,
 
-  secondary = Color(0xFF2E7D32),
-  onSecondary = Color.White,
-  secondaryContainer = Color(0xFFC8E6C9),
-  onSecondaryContainer = Color(0xFF1B5E20),
+  secondary = SecondaryLight,
+  onSecondary = OnSecondaryLight,
+  secondaryContainer = SecondaryContainerLight,
+  onSecondaryContainer = OnSecondaryContainerLight,
 
-  tertiary = Color(0xFFE65100),
-  onTertiary = Color.White,
-  tertiaryContainer = Color(0xFFFFE0B2),
-  onTertiaryContainer = Color(0xFFBF360C),
+  tertiary = TertiaryLight,
+  onTertiary = OnTertiaryLight,
+  tertiaryContainer = TertiaryContainerLight,
+  onTertiaryContainer = OnTertiaryContainerLight,
 
   background = BackgroundLight,
-  onBackground = TextPrimaryLight,
+  onBackground = OnBackgroundLight,
 
   surface = SurfaceLight,
-  onSurface = TextPrimaryLight,
+  onSurface = OnSurfaceLight,
 
   surfaceVariant = SurfaceVariantLight,
-  onSurfaceVariant = TextSecondaryLight,
+  onSurfaceVariant = OnSurfaceVariantLight,
 
-  outline = SurfaceBorderLight,
-  outlineVariant = Color(0xFFE2E8F0),
+  outline = OutlineLight,
+  outlineVariant = OutlineVariantLight,
 
-  error = Color(0xFFD32F2F),
-  onError = Color.White
+  error = ErrorLight,
+  onError = OnErrorLight,
+  errorContainer = ErrorContainerLight,
+  onErrorContainer = OnErrorContainerLight
 )
 
 @Composable
 fun MyApplicationTheme(
-  darkTheme: Boolean = true, // Default to sleek dark OLED aesthetic for timer & stopwatch
-  dynamicColor: Boolean = false, // Preserve crafted precision neon aesthetic
+  darkTheme: Boolean = isSystemInDarkTheme(),
+  dynamicColor: Boolean = true,
   content: @Composable () -> Unit,
 ) {
-  val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+  val context = LocalContext.current
+  val colorScheme = when {
+    dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+      if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    }
+    darkTheme -> FallbackDarkColorScheme
+    else -> FallbackLightColorScheme
+  }
 
   MaterialTheme(
     colorScheme = colorScheme,
     typography = Typography,
     content = content
   )
+}
+
+/**
+ * Harmonizes stored preset/step color slots with the user's live Material You / M3 ColorScheme.
+ */
+fun resolveThemeAccentColor(colorHex: Long, colorScheme: ColorScheme): Color {
+  return when (colorHex) {
+    0xFF00E5FFL -> colorScheme.primary
+    0xFF00E676L -> colorScheme.secondary
+    0xFFFF9100L -> colorScheme.tertiary
+    0xFFB388FFL -> lerp(colorScheme.primary, colorScheme.tertiary, 0.5f)
+    0xFFFF5252L -> colorScheme.error
+    0xFFFFD600L -> lerp(colorScheme.secondary, colorScheme.tertiary, 0.5f)
+    else -> Color(colorHex)
+  }
+}
+
+/**
+ * Returns an accessible, M3-aligned foreground color for a dynamic [containerColor].
+ */
+fun contrastingContentColor(containerColor: Color, colorScheme: ColorScheme): Color {
+  return when (containerColor) {
+    colorScheme.primary -> colorScheme.onPrimary
+    colorScheme.secondary -> colorScheme.onSecondary
+    colorScheme.tertiary -> colorScheme.onTertiary
+    colorScheme.error -> colorScheme.onError
+    colorScheme.primaryContainer -> colorScheme.onPrimaryContainer
+    colorScheme.secondaryContainer -> colorScheme.onSecondaryContainer
+    colorScheme.tertiaryContainer -> colorScheme.onTertiaryContainer
+    colorScheme.errorContainer -> colorScheme.onErrorContainer
+    else -> if (containerColor.luminance() > 0.45f) Color(0xFF141414) else Color(0xFFFDFDFD)
+  }
 }

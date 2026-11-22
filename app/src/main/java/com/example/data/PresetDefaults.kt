@@ -110,6 +110,8 @@ class PresetRepository(context: Context) {
   private val KEY_WHITE_NOISE_PROFILE = "setting_white_noise_profile"
   private val KEY_WHITE_NOISE_VOLUME = "setting_white_noise_volume"
   private val KEY_QUICK_ADD_SECONDS = "setting_quick_add_seconds"
+  private val KEY_THEME_MODE = "setting_theme_mode"
+  private val KEY_DYNAMIC_COLOR = "setting_dynamic_color"
 
   fun getSoundEnabled(): Boolean = prefs.getBoolean(KEY_SOUND_ENABLED, true)
   fun setSoundEnabled(value: Boolean) = prefs.edit().putBoolean(KEY_SOUND_ENABLED, value).apply()
@@ -131,6 +133,12 @@ class PresetRepository(context: Context) {
 
   fun getQuickAddSeconds(): Int = prefs.getInt(KEY_QUICK_ADD_SECONDS, 300).coerceAtLeast(1)
   fun setQuickAddSeconds(seconds: Int) = prefs.edit().putInt(KEY_QUICK_ADD_SECONDS, seconds.coerceAtLeast(1)).apply()
+
+  fun getThemeMode(): String = prefs.getString(KEY_THEME_MODE, "SYSTEM") ?: "SYSTEM"
+  fun setThemeMode(mode: String) = prefs.edit().putString(KEY_THEME_MODE, mode).apply()
+
+  fun getDynamicColorEnabled(): Boolean = prefs.getBoolean(KEY_DYNAMIC_COLOR, true)
+  fun setDynamicColorEnabled(enabled: Boolean) = prefs.edit().putBoolean(KEY_DYNAMIC_COLOR, enabled).apply()
 
   fun loadCustomPresets(): List<TimerPreset> {
     val raw = prefs.getString(KEY_CUSTOM_PRESETS, null) ?: return emptyList()

@@ -1,14 +1,18 @@
 package com.example.ui.components
 
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,25 +42,27 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.NeonAmber
-import com.example.ui.theme.NeonGreen
 import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.util.NoiseProfile
 import com.example.viewmodel.ChronoViewModel
+import kotlin.math.PI
+import kotlin.math.sin
 
 @Composable
 fun WhiteNoiseSheet(
@@ -78,6 +84,7 @@ fun WhiteNoiseSheet(
         Box(
           modifier = Modifier
             .size(36.dp)
+            .fluidPulseHalo(color = MaterialTheme.colorScheme.primary, isActive = settings.isWhiteNoisePlaying)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.primaryContainer),
           contentAlignment = Alignment.Center
@@ -111,21 +118,26 @@ fun WhiteNoiseSheet(
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         // Auto-play switch
+        val switchCardBg by animateColorAsState(
+          targetValue = if (settings.whiteNoiseEnabled)
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+          else
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+          animationSpec = tween(280),
+          label = "noise_switch_card_bg"
+        )
+        val switchCardBorder by animateColorAsState(
+          targetValue = if (settings.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+          animationSpec = tween(280),
+          label = "noise_switch_card_border"
+        )
+
         Card(
           shape = RoundedCornerShape(14.dp),
-          colors = CardDefaults.cardColors(
-            containerColor = if (settings.whiteNoiseEnabled)
-              MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
-            else
-              MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-          ),
+          colors = CardDefaults.cardColors(containerColor = switchCardBg),
           modifier = Modifier
             .fillMaxWidth()
-            .border(
-              1.dp,
-              if (settings.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-              RoundedCornerShape(14.dp)
-            )
+            .border(1.dp, switchCardBorder, RoundedCornerShape(14.dp))
         ) {
           Row(
             modifier = Modifier
@@ -165,22 +177,32 @@ fun WhiteNoiseSheet(
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
           NoiseProfile.values().forEach { profile ->
             val isSelected = settings.whiteNoiseProfile == profile
+            val cardInteraction = remember(profile) { MutableInteractionSource() }
+            val cardBg by animateColorAsState(
+              targetValue = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+              else
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+              animationSpec = tween(260),
+              label = "profile_bg_${profile.name}"
+            )
+            val cardBorder by animateColorAsState(
+              targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+              animationSpec = tween(260),
+              label = "profile_border_${profile.name}"
+            )
+
             Card(
               shape = RoundedCornerShape(12.dp),
-              colors = CardDefaults.cardColors(
-                containerColor = if (isSelected)
-                  MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                else
-                  MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-              ),
+              colors = CardDefaults.cardColors(containerColor = cardBg),
               modifier = Modifier
                 .fillMaxWidth()
-                .border(
-                  1.dp,
-                  if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                  RoundedCornerShape(12.dp)
-                )
-                .clickable { viewModel.setWhiteNoiseProfile(profile) }
+                .fluidPressScale(cardInteraction)
+                .border(1.dp, cardBorder, RoundedCornerShape(12.dp))
+                .clickable(
+                  interactionSource = cardInteraction,
+                  indication = LocalIndication.current
+                ) { viewModel.setWhiteNoiseProfile(profile) }
             ) {
               Row(
                 modifier = Modifier
@@ -269,18 +291,21 @@ fun WhiteNoiseSheet(
         }
 
         // Test Sound Preview Button
+        val previewInteraction = remember { MutableInteractionSource() }
         OutlinedButton(
           onClick = { viewModel.toggleWhiteNoisePreview() },
+          interactionSource = previewInteraction,
           shape = RoundedCornerShape(12.dp),
           modifier = Modifier
             .fillMaxWidth()
             .height(42.dp)
+            .fluidPressScale(previewInteraction)
             .testTag("white_noise_test_preview_btn")
         ) {
           Icon(
             imageVector = if (settings.isWhiteNoisePlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
             contentDescription = null,
-            tint = if (settings.isWhiteNoisePlaying) NeonAmber else MaterialTheme.colorScheme.primary,
+            tint = if (settings.isWhiteNoisePlaying) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(18.dp)
           )
           Spacer(modifier = Modifier.width(8.dp))
@@ -308,53 +333,41 @@ fun WhiteNoiseSheet(
 @Composable
 fun AnimatedAudioWaves(
   modifier: Modifier = Modifier,
-  color: Color = NeonGreen
+  color: Color = MaterialTheme.colorScheme.secondary
 ) {
   val transition = rememberInfiniteTransition(label = "audio_waves")
-  val bar1 by transition.animateFloat(
-    initialValue = 4f,
-    targetValue = 16f,
-    animationSpec = infiniteRepeatable(tween(350, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-    label = "bar1"
-  )
-  val bar2 by transition.animateFloat(
-    initialValue = 14f,
-    targetValue = 6f,
-    animationSpec = infiniteRepeatable(tween(450, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-    label = "bar2"
-  )
-  val bar3 by transition.animateFloat(
-    initialValue = 6f,
-    targetValue = 18f,
-    animationSpec = infiniteRepeatable(tween(400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-    label = "bar3"
+  val phase by transition.animateFloat(
+    initialValue = 0f,
+    targetValue = (2.0 * PI).toFloat(),
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 1100, easing = LinearEasing),
+      repeatMode = RepeatMode.Restart
+    ),
+    label = "wave_phase"
   )
 
-  Row(
-    modifier = modifier,
-    horizontalArrangement = Arrangement.spacedBy(3.dp),
-    verticalAlignment = Alignment.CenterVertically
+  Canvas(
+    modifier = modifier
+      .width(22.dp)
+      .height(16.dp)
   ) {
-    Box(
-      modifier = Modifier
-        .width(3.dp)
-        .height(bar1.dp)
-        .clip(RoundedCornerShape(1.5.dp))
-        .background(color)
-    )
-    Box(
-      modifier = Modifier
-        .width(3.dp)
-        .height(bar2.dp)
-        .clip(RoundedCornerShape(1.5.dp))
-        .background(color)
-    )
-    Box(
-      modifier = Modifier
-        .width(3.dp)
-        .height(bar3.dp)
-        .clip(RoundedCornerShape(1.5.dp))
-        .background(color)
-    )
+    val barCount = 5
+    val spacing = size.width / barCount
+    val centerY = size.height / 2f
+    val maxHalfH = size.height * 0.44f
+    val minHalfH = size.height * 0.14f
+
+    for (i in 0 until barCount) {
+      val x = spacing * i + spacing / 2f
+      val wave = 0.5f + 0.5f * sin(phase + i * 1.15f)
+      val halfH = minHalfH + (maxHalfH - minHalfH) * wave
+      drawLine(
+        color = color,
+        start = Offset(x, centerY - halfH),
+        end = Offset(x, centerY + halfH),
+        strokeWidth = 2.4.dp.toPx(),
+        cap = StrokeCap.Round
+      )
+    }
   }
 }

@@ -1,10 +1,17 @@
 package com.example.ui.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -80,23 +87,19 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.model.IntervalConfig
 import com.example.model.IntervalStep
 import com.example.model.TimeFormatter
-import com.example.ui.theme.NeonAmber
-import com.example.ui.theme.NeonCoral
-import com.example.ui.theme.NeonCyan
-import com.example.ui.theme.NeonGreen
-import com.example.ui.theme.NeonPurple
 import com.example.ui.theme.RobotoMonoFontFamily
+import com.example.ui.theme.resolveThemeAccentColor
 import com.example.util.NoiseProfile
 import com.example.viewmodel.ChronoViewModel
 import kotlinx.coroutines.launch
 import java.util.UUID
 
 private val stepAccentPalette = listOf(
-  0xFF00E676L, // NeonGreen
-  0xFF00E5FFL, // NeonCyan
-  0xFFFF9100L, // NeonAmber
-  0xFFB388FFL, // NeonPurple
-  0xFFFF5252L  // NeonCoral
+  0xFF00E676L, // Secondary M3 slot
+  0xFF00E5FFL, // Primary M3 slot
+  0xFFFF9100L, // Tertiary M3 slot
+  0xFFB388FFL, // Primary-Tertiary blend slot
+  0xFFFF5252L  // Error/Accent M3 slot
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -207,7 +210,7 @@ fun CustomIntervalPresetEditorDialog(
                   Icon(
                     imageVector = Icons.Default.Delete,
                     contentDescription = "Delete Preset",
-                    tint = NeonCoral
+                    tint = MaterialTheme.colorScheme.error
                   )
                 }
               }
@@ -375,6 +378,14 @@ fun CustomIntervalPresetEditorDialog(
               index = index,
               totalSteps = steps.size,
               step = step,
+              modifier = Modifier.animateItem(
+                fadeInSpec = tween(250),
+                fadeOutSpec = tween(200),
+                placementSpec = spring(
+                  dampingRatio = Spring.DampingRatioMediumBouncy,
+                  stiffness = Spring.StiffnessMediumLow
+                )
+              ),
               onStepChange = { updated -> steps[index] = updated },
               onMoveUp = if (index > 0) {
                 {
@@ -468,13 +479,19 @@ private fun IntervalStepEditorCard(
   index: Int,
   totalSteps: Int,
   step: IntervalStep,
+  modifier: Modifier = Modifier,
   onStepChange: (IntervalStep) -> Unit,
   onMoveUp: (() -> Unit)?,
   onMoveDown: (() -> Unit)?,
   onDelete: (() -> Unit)?,
   onPickSound: () -> Unit
 ) {
-  val accentColor = Color(step.colorHex)
+  val colorScheme = MaterialTheme.colorScheme
+  val accentColor by animateColorAsState(
+    targetValue = resolveThemeAccentColor(step.colorHex, colorScheme),
+    animationSpec = tween(280),
+    label = "step_accent_${step.id}"
+  )
   val mins = step.durationSeconds / 60
   val secs = step.durationSeconds % 60
 
@@ -483,7 +500,7 @@ private fun IntervalStepEditorCard(
     color = MaterialTheme.colorScheme.surface,
     border = BorderStroke(1.dp, accentColor.copy(alpha = 0.45f)),
     tonalElevation = 2.dp,
-    modifier = Modifier
+    modifier = modifier
       .fillMaxWidth()
       .testTag("interval_step_card_$index")
   ) {
@@ -519,11 +536,20 @@ private fun IntervalStepEditorCard(
           Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             stepAccentPalette.forEach { colorLong ->
               val isColorSelected = step.colorHex == colorLong
+              val dotColor = resolveThemeAccentColor(colorLong, colorScheme)
+              val dotSize by animateDpAsState(
+                targetValue = if (isColorSelected) 20.dp else 16.dp,
+                animationSpec = spring(
+                  dampingRatio = Spring.DampingRatioMediumBouncy,
+                  stiffness = Spring.StiffnessMedium
+                ),
+                label = "step_dot_size"
+              )
               Box(
                 modifier = Modifier
-                  .size(if (isColorSelected) 20.dp else 16.dp)
+                  .size(dotSize)
                   .clip(CircleShape)
-                  .background(Color(colorLong))
+                  .background(dotColor)
                   .border(
                     width = if (isColorSelected) 2.dp else 0.dp,
                     color = if (isColorSelected) MaterialTheme.colorScheme.onBackground else Color.Transparent,
@@ -573,7 +599,7 @@ private fun IntervalStepEditorCard(
                 imageVector = Icons.Default.Delete,
                 contentDescription = "Remove Interval",
                 modifier = Modifier.size(18.dp),
-                tint = NeonCoral.copy(alpha = 0.85f)
+                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f)
               )
             }
           }
@@ -797,14 +823,20 @@ private fun SmallStepIconButton(
   icon: androidx.compose.ui.graphics.vector.ImageVector,
   contentDescription: String
 ) {
+  val interactionSource = remember { MutableInteractionSource() }
   Box(
     modifier = Modifier
       .minimumInteractiveComponentSize()
       .size(34.dp)
+      .fluidPressScale(interactionSource, pressedScale = 0.86f)
       .clip(CircleShape)
       .background(MaterialTheme.colorScheme.surface)
       .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), CircleShape)
-      .clickable(onClick = onClick),
+      .clickable(
+        interactionSource = interactionSource,
+        indication = LocalIndication.current,
+        onClick = onClick
+      ),
     contentAlignment = Alignment.Center
   ) {
     Icon(
@@ -961,7 +993,7 @@ fun IntervalSoundPickerDialog(
                 Icon(
                   imageVector = if (isPreviewing) Icons.Default.Stop else Icons.Default.PlayArrow,
                   contentDescription = if (isPreviewing) "Stop preview" else "Preview ${profile.shortLabel}",
-                  tint = if (isPreviewing) NeonAmber else MaterialTheme.colorScheme.primary,
+                  tint = if (isPreviewing) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
                   modifier = Modifier.size(20.dp)
                 )
               }

@@ -1,9 +1,21 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,8 +80,11 @@ import com.example.model.TimeFormatter
 import com.example.model.TimerPreset
 import com.example.ui.components.CustomIntervalPresetEditorDialog
 import com.example.ui.components.NumberStepper
-import com.example.ui.theme.NeonGreen
+import com.example.ui.components.fluidPressScale
+import com.example.ui.components.fluidPulseHalo
 import com.example.ui.theme.RobotoMonoFontFamily
+import com.example.ui.theme.contrastingContentColor
+import com.example.ui.theme.resolveThemeAccentColor
 import com.example.viewmodel.AppTab
 import com.example.viewmodel.ChronoViewModel
 
@@ -136,7 +151,9 @@ fun PresetsScreen(
   var showIntervalEditor by remember { mutableStateOf(false) }
   var editingIntervalPreset by remember { mutableStateOf<IntervalConfig?>(null) }
 
+  val colorScheme = MaterialTheme.colorScheme
   val runningTimer = timerState.timers.firstOrNull { it.isRunning }
+  val fabInteraction = remember { MutableInteractionSource() }
 
   Scaffold(
     modifier = modifier.fillMaxSize(),
@@ -145,10 +162,14 @@ fun PresetsScreen(
     floatingActionButton = {
       FloatingActionButton(
         onClick = { showAddPresetDialog = true },
+        interactionSource = fabInteraction,
         containerColor = MaterialTheme.colorScheme.primary,
-        contentColor = Color(0xFF00363D),
+        contentColor = MaterialTheme.colorScheme.onPrimary,
         shape = CircleShape,
-        modifier = Modifier.testTag("add_custom_preset_fab")
+        modifier = Modifier
+          .fluidPulseHalo(color = MaterialTheme.colorScheme.primary, isActive = true)
+          .fluidPressScale(fabInteraction, pressedScale = 0.90f)
+          .testTag("add_custom_preset_fab")
       ) {
         Icon(
           imageVector = Icons.Default.Add,
@@ -164,52 +185,63 @@ fun PresetsScreen(
         .padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
       // Active Running Timer Banner (if a timer is running, allow jumping back to it)
-      if (runningTimer != null) {
-        Surface(
-          shape = RoundedCornerShape(14.dp),
-          color = NeonGreen.copy(alpha = 0.14f),
-          border = BorderStroke(1.dp, NeonGreen.copy(alpha = 0.6f)),
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .clickable {
-              viewModel.selectTimer(runningTimer.id)
-              viewModel.setTab(AppTab.TIMER)
-            }
-        ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+      AnimatedVisibility(
+        visible = runningTimer != null,
+        enter = fadeIn(tween(240)) + expandVertically(),
+        exit = fadeOut(tween(180)) + shrinkVertically()
+      ) {
+        runningTimer?.let { running ->
+          val bannerInteraction = remember(running.id) { MutableInteractionSource() }
+          Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)),
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(bottom = 8.dp)
+              .fluidPressScale(bannerInteraction)
+              .clip(RoundedCornerShape(14.dp))
+              .clickable(
+                interactionSource = bannerInteraction,
+                indication = LocalIndication.current
+              ) {
+                viewModel.selectTimer(running.id)
+                viewModel.setTab(AppTab.TIMER)
+              }
           ) {
             Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              modifier = Modifier.weight(1f)
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
             ) {
-              Icon(
-                imageVector = Icons.Default.HourglassBottom,
-                contentDescription = null,
-                tint = NeonGreen,
-                modifier = Modifier.size(16.dp)
-              )
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f)
+              ) {
+                Icon(
+                  imageVector = Icons.Default.HourglassBottom,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.secondary,
+                  modifier = Modifier.size(16.dp)
+                )
+                Text(
+                  text = "Running: ${running.title}",
+                  style = MaterialTheme.typography.labelMedium,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onSecondaryContainer,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
               Text(
-                text = "Running: ${runningTimer.title}",
-                style = MaterialTheme.typography.labelMedium,
+                text = TimeFormatter.formatTimer(running.remainingMillis),
+                fontFamily = RobotoMonoFontFamily,
+                fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
-                color = NeonGreen,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = MaterialTheme.colorScheme.onSecondaryContainer
               )
             }
-            Text(
-              text = TimeFormatter.formatTimer(runningTimer.remainingMillis),
-              fontFamily = RobotoMonoFontFamily,
-              fontSize = 13.sp,
-              fontWeight = FontWeight.Bold,
-              color = NeonGreen
-            )
           }
         }
       }
@@ -223,15 +255,18 @@ fun PresetsScreen(
       ) {
         items(categories) { category ->
           val isSelected = selectedCategory == category
+          val chipInteraction = remember(category) { MutableInteractionSource() }
           FilterChip(
             selected = isSelected,
             onClick = { selectedCategory = category },
+            interactionSource = chipInteraction,
             label = { Text(category, fontSize = 12.sp) },
             shape = RoundedCornerShape(16.dp),
             colors = FilterChipDefaults.filterChipColors(
               selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
               selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-            )
+            ),
+            modifier = Modifier.fluidPressScale(chipInteraction)
           )
         }
       }
@@ -268,23 +303,35 @@ fun PresetsScreen(
           verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
           items(itemsToShow, key = { it.key }) { item ->
+            val itemModifier = Modifier.animateItem(
+              fadeInSpec = tween(260),
+              fadeOutSpec = tween(200),
+              placementSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+              )
+            )
+
             when (item) {
               is PresetListItem.Timer -> {
                 val preset = item.preset
-                val accentColor = Color(preset.colorHex)
+                val accentColor = resolveThemeAccentColor(preset.colorHex, colorScheme)
                 val isTimerActive = timerState.timers.any {
                   it.isRunning && it.title == preset.title &&
                     it.initialDurationMillis == preset.durationSeconds * 1000L
                 }
+                val startInteraction = remember(item.key) { MutableInteractionSource() }
+                val borderColor by animateColorAsState(
+                  targetValue = if (isTimerActive) MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                  animationSpec = tween(280),
+                  label = "preset_border_${item.key}"
+                )
 
                 Surface(
                   shape = RoundedCornerShape(14.dp),
                   color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                  border = BorderStroke(
-                    1.dp,
-                    if (isTimerActive) NeonGreen.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                  ),
-                  modifier = Modifier.fillMaxWidth()
+                  border = BorderStroke(1.dp, borderColor),
+                  modifier = itemModifier.fillMaxWidth()
                 ) {
                   Row(
                     modifier = Modifier
@@ -324,7 +371,7 @@ fun PresetsScreen(
                               text = "ACTIVE",
                               fontSize = 9.sp,
                               fontWeight = FontWeight.Bold,
-                              color = NeonGreen
+                              color = MaterialTheme.colorScheme.secondary
                             )
                           }
                         }
@@ -355,13 +402,16 @@ fun PresetsScreen(
 
                       Button(
                         onClick = { viewModel.applyPresetToTimer(preset, startImmediately = true) },
+                        interactionSource = startInteraction,
                         colors = ButtonDefaults.buttonColors(
                           containerColor = accentColor,
-                          contentColor = Color(0xFF00363D)
+                          contentColor = contrastingContentColor(accentColor, colorScheme)
                         ),
                         shape = RoundedCornerShape(16.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        modifier = Modifier.height(34.dp)
+                        modifier = Modifier
+                          .height(34.dp)
+                          .fluidPressScale(startInteraction, pressedScale = 0.91f)
                       ) {
                         Icon(
                           imageVector = Icons.Default.PlayArrow,
@@ -383,9 +433,9 @@ fun PresetsScreen(
               is PresetListItem.Interval -> {
                 val config = item.config
                 val accentColor = if (config.isMultiStep && config.steps.isNotEmpty()) {
-                  Color(config.steps.first().colorHex)
+                  resolveThemeAccentColor(config.steps.first().colorHex, colorScheme)
                 } else {
-                  NeonGreen
+                  colorScheme.secondary
                 }
                 val isRunningThis = intervalState.isRunning && intervalState.config.id == config.id
                 val soundCount = config.steps.count { it.backgroundSound != null }
@@ -395,15 +445,18 @@ fun PresetsScreen(
                 } else {
                   "Interval • ${TimeFormatter.formatDurationSummary(config.totalDurationSeconds.toLong())}"
                 }
+                val startInteraction = remember(item.key) { MutableInteractionSource() }
+                val borderColor by animateColorAsState(
+                  targetValue = if (isRunningThis) MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                  animationSpec = tween(280),
+                  label = "interval_preset_border_${item.key}"
+                )
 
                 Surface(
                   shape = RoundedCornerShape(14.dp),
                   color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                  border = BorderStroke(
-                    1.dp,
-                    if (isRunningThis) NeonGreen.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                  ),
-                  modifier = Modifier.fillMaxWidth()
+                  border = BorderStroke(1.dp, borderColor),
+                  modifier = itemModifier.fillMaxWidth()
                 ) {
                   Row(
                     modifier = Modifier
@@ -501,13 +554,16 @@ fun PresetsScreen(
 
                       Button(
                         onClick = { viewModel.applyIntervalPreset(config, startImmediately = true) },
+                        interactionSource = startInteraction,
                         colors = ButtonDefaults.buttonColors(
                           containerColor = accentColor,
-                          contentColor = Color(0xFF00363D)
+                          contentColor = contrastingContentColor(accentColor, colorScheme)
                         ),
                         shape = RoundedCornerShape(16.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        modifier = Modifier.height(34.dp)
+                        modifier = Modifier
+                          .height(34.dp)
+                          .fluidPressScale(startInteraction, pressedScale = 0.91f)
                       ) {
                         Icon(
                           imageVector = Icons.Default.PlayArrow,
@@ -618,13 +674,23 @@ fun AddCustomPresetDialog(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
           )
+          val dialogColorScheme = MaterialTheme.colorScheme
           presetColorPalette.forEach { colorHex ->
             val isColorSelected = selectedColor == colorHex
+            val swatchColor = resolveThemeAccentColor(colorHex, dialogColorScheme)
+            val dotSize by animateDpAsState(
+              targetValue = if (isColorSelected) 24.dp else 19.dp,
+              animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium
+              ),
+              label = "preset_dot_size"
+            )
             Box(
               modifier = Modifier
-                .size(if (isColorSelected) 24.dp else 20.dp)
+                .size(dotSize)
                 .clip(CircleShape)
-                .background(Color(colorHex))
+                .background(swatchColor)
                 .border(
                   width = if (isColorSelected) 2.dp else 0.dp,
                   color = if (isColorSelected) MaterialTheme.colorScheme.onBackground else Color.Transparent,

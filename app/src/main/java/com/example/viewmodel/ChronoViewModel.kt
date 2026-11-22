@@ -13,6 +13,7 @@ import com.example.model.LapItem
 import com.example.model.StopwatchStats
 import com.example.model.TimerItem
 import com.example.model.TimerPreset
+import com.example.ui.theme.AppThemeMode
 import com.example.util.NoiseProfile
 import com.example.util.SoundHapticHelper
 import com.example.util.VoiceMaskingNoiseGenerator
@@ -72,7 +73,8 @@ data class SettingsState(
   val soundEnabled: Boolean = true,
   val vibrationEnabled: Boolean = true,
   val keepScreenOn: Boolean = true,
-  val isDarkTheme: Boolean = true,
+  val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+  val dynamicColorEnabled: Boolean = true,
   val whiteNoiseEnabled: Boolean = true,
   val whiteNoiseProfile: NoiseProfile = NoiseProfile.VOICE_MASKING,
   val whiteNoiseVolume: Float = 0.7f,
@@ -129,7 +131,12 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       soundEnabled = repository.getSoundEnabled(),
       vibrationEnabled = repository.getVibrationEnabled(),
       keepScreenOn = repository.getKeepScreenOn(),
-      isDarkTheme = true,
+      themeMode = try {
+        AppThemeMode.valueOf(repository.getThemeMode())
+      } catch (_: Exception) {
+        AppThemeMode.SYSTEM
+      },
+      dynamicColorEnabled = repository.getDynamicColorEnabled(),
       whiteNoiseEnabled = repository.getWhiteNoiseEnabled(),
       whiteNoiseProfile = try {
         NoiseProfile.valueOf(repository.getWhiteNoiseProfile())
@@ -277,7 +284,12 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
                 _settings.value.soundEnabled,
                 _settings.value.vibrationEnabled
               )
-              timer.copy(remainingMillis = 0L, isRunning = false, isFinished = true)
+              timer.copy(
+                remainingMillis = 0L,
+                isRunning = false,
+                isFinished = true,
+                hasStarted = false
+              )
             } else {
               timer.copy(remainingMillis = newRemaining)
             }
@@ -304,7 +316,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       val updated = state.timers.map { timer ->
         if (timer.id == timerId) {
           val remaining = if (timer.remainingMillis <= 0L) timer.initialDurationMillis else timer.remainingMillis
-          timer.copy(isRunning = true, remainingMillis = remaining, isFinished = false)
+          timer.copy(isRunning = true, remainingMillis = remaining, isFinished = false, hasStarted = true)
         } else {
           timer
         }
@@ -334,7 +346,12 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     _timerState.update { state ->
       val updated = state.timers.map { timer ->
         if (timer.id == timerId) {
-          timer.copy(isRunning = false, remainingMillis = timer.initialDurationMillis, isFinished = false)
+          timer.copy(
+            isRunning = false,
+            remainingMillis = timer.initialDurationMillis,
+            isFinished = false,
+            hasStarted = false
+          )
         } else {
           timer
         }
@@ -395,7 +412,8 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
             initialDurationMillis = durationMillis,
             remainingMillis = durationMillis,
             isRunning = false,
-            isFinished = false
+            isFinished = false,
+            hasStarted = false
           )
         } else {
           timer
@@ -441,6 +459,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       initialDurationMillis = durationMillis,
       remainingMillis = durationMillis,
       isRunning = startImmediately,
+      hasStarted = startImmediately,
       colorHex = preset.colorHex
     )
     _timerState.update {
@@ -831,8 +850,17 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     soundHapticHelper.playClickSound(_settings.value.soundEnabled)
   }
 
-  fun toggleTheme() {
-    _settings.update { it.copy(isDarkTheme = !it.isDarkTheme) }
+  fun setThemeMode(mode: AppThemeMode) {
+    _settings.update { it.copy(themeMode = mode) }
+    repository.setThemeMode(mode.name)
+    soundHapticHelper.playClickSound(_settings.value.soundEnabled)
+  }
+
+  fun toggleDynamicColor() {
+    val next = !_settings.value.dynamicColorEnabled
+    _settings.update { it.copy(dynamicColorEnabled = next) }
+    repository.setDynamicColorEnabled(next)
+    soundHapticHelper.playClickSound(_settings.value.soundEnabled)
   }
 
   fun syncWhiteNoise() {

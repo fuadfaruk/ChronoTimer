@@ -1,8 +1,20 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,11 +29,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import android.os.Build
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.LockClock
 import androidx.compose.material.icons.filled.MoreTime
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Vibration
@@ -30,6 +44,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -55,7 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.TimeFormatter
 import com.example.ui.screens.EditQuickAddDialog
-import com.example.ui.theme.NeonAmber
+import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.util.NoiseProfile
 import com.example.viewmodel.ChronoViewModel
@@ -95,21 +111,32 @@ fun SettingsDialog(
           color = MaterialTheme.colorScheme.primary
         )
 
+        val audioCardBg by animateColorAsState(
+          targetValue = if (settings.whiteNoiseEnabled)
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+          else
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+          animationSpec = tween(280),
+          label = "settings_audio_bg"
+        )
+        val audioCardBorder by animateColorAsState(
+          targetValue = if (settings.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+          animationSpec = tween(280),
+          label = "settings_audio_border"
+        )
+
         Card(
           shape = RoundedCornerShape(14.dp),
-          colors = CardDefaults.cardColors(
-            containerColor = if (settings.whiteNoiseEnabled)
-              MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
-            else
-              MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-          ),
+          colors = CardDefaults.cardColors(containerColor = audioCardBg),
           modifier = Modifier
             .fillMaxWidth()
-            .border(
-              1.dp,
-              if (settings.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-              RoundedCornerShape(14.dp)
+            .animateContentSize(
+              animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+              )
             )
+            .border(1.dp, audioCardBorder, RoundedCornerShape(14.dp))
         ) {
           Column(modifier = Modifier.padding(12.dp)) {
             Row(
@@ -146,102 +173,128 @@ fun SettingsDialog(
               )
             }
 
-            if (settings.whiteNoiseEnabled) {
-              Spacer(modifier = Modifier.height(10.dp))
+            AnimatedVisibility(
+              visible = settings.whiteNoiseEnabled,
+              enter = fadeIn(tween(240)) + expandVertically(
+                animationSpec = spring(
+                  dampingRatio = Spring.DampingRatioNoBouncy,
+                  stiffness = Spring.StiffnessMediumLow
+                )
+              ),
+              exit = fadeOut(tween(180)) + shrinkVertically(animationSpec = tween(200))
+            ) {
+              Column {
+                Spacer(modifier = Modifier.height(10.dp))
 
-              // Profile selection chips
-              Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                NoiseProfile.values().forEach { profile ->
-                  val isSelected = settings.whiteNoiseProfile == profile
-                  Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                    border = androidx.compose.foundation.BorderStroke(
-                      1.dp,
-                      if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                    ),
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .clip(RoundedCornerShape(8.dp))
-                      .clickable { viewModel.setWhiteNoiseProfile(profile) }
-                  ) {
-                    Row(
-                      modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                      verticalAlignment = Alignment.CenterVertically
+                // Profile selection chips
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                  NoiseProfile.values().forEach { profile ->
+                    val isSelected = settings.whiteNoiseProfile == profile
+                    val chipInteraction = remember(profile) { MutableInteractionSource() }
+                    val chipBg by animateColorAsState(
+                      targetValue = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                      animationSpec = tween(220),
+                      label = "settings_profile_bg_${profile.name}"
+                    )
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = chipBg,
+                      border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                      ),
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .fluidPressScale(chipInteraction)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(
+                          interactionSource = chipInteraction,
+                          indication = LocalIndication.current
+                        ) { viewModel.setWhiteNoiseProfile(profile) }
                     ) {
-                      Box(
-                        modifier = Modifier
-                          .size(12.dp)
-                          .clip(CircleShape)
-                          .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
-                          .border(
-                            1.5.dp,
-                            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                            CircleShape
-                          )
-                      )
-                      Spacer(modifier = Modifier.width(8.dp))
-                      Text(
-                        text = profile.displayName,
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                      )
+                      Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                      ) {
+                        Box(
+                          modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                            .border(
+                              1.5.dp,
+                              if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                              CircleShape
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                          text = profile.displayName,
+                          fontSize = 12.sp,
+                          fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                          color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                        )
+                      }
                     }
                   }
                 }
-              }
 
-              Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-              // Volume slider
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Text(
-                  text = "Volume",
-                  style = MaterialTheme.typography.labelSmall,
-                  fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                  text = "${(settings.whiteNoiseVolume * 100).toInt()}%",
-                  fontFamily = RobotoMonoFontFamily,
-                  fontSize = 12.sp,
-                  fontWeight = FontWeight.Bold,
-                  color = MaterialTheme.colorScheme.primary
-                )
-              }
+                // Volume slider
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Text(
+                    text = "Volume",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold
+                  )
+                  Text(
+                    text = "${(settings.whiteNoiseVolume * 100).toInt()}%",
+                    fontFamily = RobotoMonoFontFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                  )
+                }
 
-              Slider(
-                value = settings.whiteNoiseVolume,
-                onValueChange = { viewModel.setWhiteNoiseVolume(it) },
-                valueRange = 0.05f..1.0f,
-                colors = SliderDefaults.colors(
-                  thumbColor = MaterialTheme.colorScheme.primary,
-                  activeTrackColor = MaterialTheme.colorScheme.primary
+                Slider(
+                  value = settings.whiteNoiseVolume,
+                  onValueChange = { viewModel.setWhiteNoiseVolume(it) },
+                  valueRange = 0.05f..1.0f,
+                  colors = SliderDefaults.colors(
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    activeTrackColor = MaterialTheme.colorScheme.primary
+                  )
                 )
-              )
 
-              // Test Preview button
-              OutlinedButton(
-                onClick = { viewModel.toggleWhiteNoisePreview() },
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth().height(36.dp)
-              ) {
-                Icon(
-                  imageVector = if (settings.isWhiteNoisePlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
-                  contentDescription = null,
-                  tint = if (settings.isWhiteNoisePlaying) NeonAmber else MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                  text = if (settings.isWhiteNoisePlaying) "Stop Test Audio" else "Test Focus Audio",
-                  fontSize = 12.sp,
-                  fontWeight = FontWeight.SemiBold
-                )
+                // Test Preview button
+                val testInteraction = remember { MutableInteractionSource() }
+                OutlinedButton(
+                  onClick = { viewModel.toggleWhiteNoisePreview() },
+                  interactionSource = testInteraction,
+                  shape = RoundedCornerShape(10.dp),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .fluidPressScale(testInteraction)
+                ) {
+                  Icon(
+                    imageVector = if (settings.isWhiteNoisePlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = if (settings.isWhiteNoisePlaying) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                  )
+                  Spacer(modifier = Modifier.width(6.dp))
+                  Text(
+                    text = if (settings.isWhiteNoisePlaying) "Stop Test Audio" else "Test Focus Audio",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                  )
+                }
               }
             }
           }
@@ -337,12 +390,8 @@ fun SettingsDialog(
           )
         }
 
-        // Theme Mode Toggle
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
+        // Theme Mode Selector (System / Light / Dark)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -352,16 +401,87 @@ fun SettingsDialog(
               contentDescription = null,
               tint = MaterialTheme.colorScheme.primary
             )
-            Text(
-              text = "Dark Mode",
-              style = MaterialTheme.typography.bodyMedium,
-              fontWeight = FontWeight.SemiBold
+            Column {
+              Text(
+                text = "Appearance",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+              )
+              Text(
+                text = "Follows your Android system theme by default",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+          }
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            AppThemeMode.entries.forEach { mode ->
+              val isSelected = settings.themeMode == mode
+              val modeInteraction = remember(mode) { MutableInteractionSource() }
+              FilterChip(
+                selected = isSelected,
+                onClick = { viewModel.setThemeMode(mode) },
+                interactionSource = modeInteraction,
+                label = {
+                  Text(
+                    text = mode.label,
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                  )
+                },
+                shape = RoundedCornerShape(12.dp),
+                colors = FilterChipDefaults.filterChipColors(
+                  selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                  selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                modifier = Modifier
+                  .weight(1f)
+                  .fluidPressScale(modeInteraction)
+              )
+            }
+          }
+        }
+
+        // Material You Dynamic Color Toggle (Android 12+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+              modifier = Modifier.weight(1f).padding(end = 8.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.Palette,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+              )
+              Column {
+                Text(
+                  text = "Material You Dynamic Color",
+                  style = MaterialTheme.typography.bodyMedium,
+                  fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                  text = "Adapt colors to your device wallpaper",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              }
+            }
+            Switch(
+              checked = settings.dynamicColorEnabled,
+              onCheckedChange = { viewModel.toggleDynamicColor() },
+              modifier = Modifier.testTag("settings_dynamic_color_switch")
             )
           }
-          Switch(
-            checked = settings.isDarkTheme,
-            onCheckedChange = { viewModel.toggleTheme() }
-          )
         }
 
         // Quick Add Increment

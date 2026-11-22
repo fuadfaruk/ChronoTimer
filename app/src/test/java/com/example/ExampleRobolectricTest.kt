@@ -189,4 +189,74 @@ class ExampleRobolectricTest {
     val afterMillis = vm.timerState.value.timers.first { it.id == timerId }.remainingMillis
     assertEquals(beforeMillis + 165_000L, afterMillis)
   }
+
+  @Test
+  fun `test timer hasStarted full-screen focus state lifecycle`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val vm = com.example.viewmodel.ChronoViewModel(app)
+    val timerId = vm.timerState.value.selectedTimerId
+
+    // Initial state: not started (normal mode)
+    var timer = vm.timerState.value.timers.first { it.id == timerId }
+    assertFalse(timer.hasStarted)
+    assertFalse(timer.isRunning)
+
+    // Start timer -> enters full-screen focus mode
+    vm.startTimer(timerId)
+    timer = vm.timerState.value.timers.first { it.id == timerId }
+    assertTrue(timer.hasStarted)
+    assertTrue(timer.isRunning)
+
+    // Pause timer -> remains in full-screen focus mode so Reset becomes visible
+    vm.pauseTimer(timerId)
+    timer = vm.timerState.value.timers.first { it.id == timerId }
+    assertTrue(timer.hasStarted)
+    assertFalse(timer.isRunning)
+
+    // Add time while paused -> still in full-screen focus mode
+    vm.addTimeToTimer(timerId, 60L)
+    timer = vm.timerState.value.timers.first { it.id == timerId }
+    assertTrue(timer.hasStarted)
+
+    // Reset timer -> exits full-screen focus mode and returns to normal mode
+    vm.resetTimer(timerId)
+    timer = vm.timerState.value.timers.first { it.id == timerId }
+    assertFalse(timer.hasStarted)
+    assertFalse(timer.isRunning)
+
+    // Launch a preset immediately -> enters full-screen focus mode for the new preset timer
+    val preset = com.example.model.TimerPreset(
+      id = "focus_test",
+      title = "Quick Sprint",
+      durationSeconds = 600L,
+      category = "Study",
+      iconName = "school",
+      colorHex = 0xFF00E5FFL
+    )
+    vm.applyPresetToTimer(preset, startImmediately = true)
+    val launched = vm.timerState.value.timers.first { it.id == vm.timerState.value.selectedTimerId }
+    assertTrue(launched.hasStarted)
+    assertTrue(launched.isRunning)
+    vm.pauseTimer(launched.id)
+  }
+
+  @Test
+  fun `test Material You dynamic color and system theme mode defaults and persistence`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val repository = PresetRepository(app)
+
+    assertEquals("SYSTEM", repository.getThemeMode())
+    assertTrue(repository.getDynamicColorEnabled())
+
+    val vm = com.example.viewmodel.ChronoViewModel(app)
+    assertEquals(com.example.ui.theme.AppThemeMode.SYSTEM, vm.settings.value.themeMode)
+    assertTrue(vm.settings.value.dynamicColorEnabled)
+
+    vm.setThemeMode(com.example.ui.theme.AppThemeMode.LIGHT)
+    vm.toggleDynamicColor()
+    assertEquals(com.example.ui.theme.AppThemeMode.LIGHT, vm.settings.value.themeMode)
+    assertFalse(vm.settings.value.dynamicColorEnabled)
+    assertEquals("LIGHT", repository.getThemeMode())
+    assertFalse(repository.getDynamicColorEnabled())
+  }
 }
