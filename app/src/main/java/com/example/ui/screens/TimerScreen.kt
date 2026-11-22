@@ -4,9 +4,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -60,6 +62,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.TimeFormatter
@@ -74,6 +77,7 @@ import com.example.ui.theme.NeonGreen
 import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.viewmodel.ChronoViewModel
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TimerScreen(
   viewModel: ChronoViewModel,
@@ -85,6 +89,7 @@ fun TimerScreen(
     ?: timerState.timers.firstOrNull()
 
   var showEditDurationDialog by remember { mutableStateOf(false) }
+  var showEditQuickAddDialog by remember { mutableStateOf(false) }
   var showWhiteNoiseSheet by remember { mutableStateOf(false) }
 
   if (activeTimer == null) return
@@ -397,22 +402,64 @@ fun TimerScreen(
 
       Spacer(modifier = Modifier.width(18.dp))
 
-      // Quick +5 min extension button
-      FilledTonalButton(
-        onClick = { viewModel.addTimeToTimer(activeTimer.id, 300L) },
-        shape = CircleShape,
-        modifier = Modifier
-          .size(58.dp)
-          .testTag("timer_add_new_btn"),
-        contentPadding = PaddingValues(0.dp)
-      ) {
-        Text(
-          text = "+5m",
-          fontFamily = RobotoMonoFontFamily,
-          fontWeight = FontWeight.Bold,
-          fontSize = 14.sp,
-          color = MaterialTheme.colorScheme.onSurface
-        )
+      // Customizable Quick Add Time Button:
+      // - Before timer starts: tap to customize minutes & seconds
+      // - After timer starts (running or paused mid-session): tap to add time, long-press to customize
+      val quickAddSec = settings.quickAddSeconds
+      val quickAddLabel = remember(quickAddSec) { formatQuickAddButtonLabel(quickAddSec) }
+      val hasTimerStarted = isRunning ||
+        (activeTimer.remainingMillis < activeTimer.initialDurationMillis && !activeTimer.isFinished)
+
+      Box(contentAlignment = Alignment.Center) {
+        Surface(
+          shape = CircleShape,
+          color = MaterialTheme.colorScheme.secondaryContainer,
+          contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+          border = if (!hasTimerStarted) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+          } else {
+            null
+          },
+          modifier = Modifier
+            .size(58.dp)
+            .clip(CircleShape)
+            .combinedClickable(
+              onClick = {
+                if (hasTimerStarted) {
+                  viewModel.addTimeToTimer(activeTimer.id, quickAddSec.toLong())
+                } else {
+                  showEditQuickAddDialog = true
+                }
+              },
+              onLongClick = { showEditQuickAddDialog = true }
+            )
+            .testTag("timer_add_new_btn")
+        ) {
+          Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+          ) {
+            Text(
+              text = quickAddLabel,
+              fontFamily = RobotoMonoFontFamily,
+              fontWeight = FontWeight.Bold,
+              fontSize = if (quickAddLabel.contains("\n")) 11.sp else 14.sp,
+              lineHeight = 13.sp,
+              textAlign = TextAlign.Center,
+              color = MaterialTheme.colorScheme.onSurface
+            )
+            if (!hasTimerStarted) {
+              Spacer(modifier = Modifier.height(1.dp))
+              Icon(
+                imageVector = Icons.Default.Edit,
+                contentDescription = "Customize quick-add time",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(11.dp)
+              )
+            }
+          }
+        }
       }
     }
   }
@@ -437,9 +484,22 @@ fun TimerScreen(
     )
   }
 
+  // Customize Quick-Add Increment Dialog
+  if (showEditQuickAddDialog) {
+    EditQuickAddDialog(
+      initialTotalSeconds = settings.quickAddSeconds,
+      onDismiss = { showEditQuickAddDialog = false },
+      onConfirm = { mins, secs ->
+        viewModel.setQuickAddIncrement(mins, secs)
+        showEditQuickAddDialog = false
+      }
+    )
+  }
+
   // Ringing Alarm Dialog Overlay
   if (timerState.ringingTimerId != null) {
     val ringingTimer = timerState.timers.find { it.id == timerState.ringingTimerId }
+    val quickAddSec = settings.quickAddSeconds
     AlertDialog(
       onDismissRequest = { viewModel.dismissAlarm() },
       icon = {
@@ -475,17 +535,127 @@ fun TimerScreen(
         OutlinedButton(
           onClick = {
             if (ringingTimer != null) {
-              viewModel.addTimeToTimer(ringingTimer.id, 300L)
+              viewModel.addTimeToTimer(ringingTimer.id, quickAddSec.toLong())
               viewModel.startTimer(ringingTimer.id)
             }
             viewModel.dismissAlarm()
           }
         ) {
-          Text("+5 Min")
+          Text("+${TimeFormatter.formatDurationSummary(quickAddSec.toLong())}")
         }
       }
     )
   }
+}
+
+private fun formatQuickAddButtonLabel(totalSeconds: Int): String {
+  val mins = totalSeconds / 60
+  val secs = totalSeconds % 60
+  return when {
+    secs == 0 -> "+${mins}m"
+    mins == 0 -> "+${secs}s"
+    else -> "+${mins}m\n${secs}s"
+  }
+}
+
+@Composable
+fun EditQuickAddDialog(
+  initialTotalSeconds: Int,
+  onDismiss: () -> Unit,
+  onConfirm: (minutes: Int, seconds: Int) -> Unit
+) {
+  var minutes by remember { mutableIntStateOf((initialTotalSeconds / 60).coerceIn(0, 120)) }
+  var seconds by remember { mutableIntStateOf((initialTotalSeconds % 60).coerceIn(0, 59)) }
+  val total = minutes * 60 + seconds
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Customize Quick Add", fontWeight = FontWeight.Bold) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+          text = "Choose how many minutes and seconds are added each time you tap the quick-add button.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          val quickOptions = listOf(
+            15 to "+15s",
+            30 to "+30s",
+            60 to "+1m",
+            120 to "+2m",
+            300 to "+5m",
+            600 to "+10m"
+          )
+          quickOptions.forEach { (secOpt, label) ->
+            val isSelected = total == secOpt
+            FilterChip(
+              selected = isSelected,
+              onClick = {
+                minutes = secOpt / 60
+                seconds = secOpt % 60
+              },
+              label = { Text(label, fontSize = 12.sp, fontFamily = RobotoMonoFontFamily) },
+              shape = RoundedCornerShape(12.dp)
+            )
+          }
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+          NumberStepper(
+            value = minutes,
+            label = "Mins",
+            onValueChange = { minutes = it },
+            min = 0,
+            max = 120,
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
+          )
+          NumberStepper(
+            value = seconds,
+            label = "Secs",
+            onValueChange = { seconds = it },
+            min = 0,
+            max = 59,
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
+          )
+        }
+
+        Text(
+          text = if (total > 0) {
+            "Adds +${TimeFormatter.formatDurationSummary(total.toLong())} per tap"
+          } else {
+            "Select at least 1 second"
+          },
+          style = MaterialTheme.typography.labelMedium,
+          fontWeight = FontWeight.SemiBold,
+          color = if (total > 0) MaterialTheme.colorScheme.primary else NeonCoral
+        )
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = { onConfirm(minutes, seconds) },
+        enabled = total > 0,
+        modifier = Modifier.testTag("quick_add_save_btn")
+      ) {
+        Text("Save")
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("Cancel")
+      }
+    }
+  )
 }
 
 @Composable

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.LockClock
+import androidx.compose.material.icons.filled.MoreTime
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Vibration
@@ -41,6 +42,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +53,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.TimeFormatter
+import com.example.ui.screens.EditQuickAddDialog
 import com.example.ui.theme.NeonAmber
 import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.util.NoiseProfile
@@ -60,6 +66,7 @@ fun SettingsDialog(
   onDismiss: () -> Unit
 ) {
   val settings by viewModel.settings.collectAsState()
+  var showQuickAddDialog by remember { mutableStateOf(false) }
 
   AlertDialog(
     onDismissRequest = {
@@ -356,6 +363,53 @@ fun SettingsDialog(
             onCheckedChange = { viewModel.toggleTheme() }
           )
         }
+
+        // Quick Add Increment
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { showQuickAddDialog = true }
+            .padding(vertical = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.MoreTime,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary
+            )
+            Column {
+              Text(
+                text = "Timer Quick-Add Step",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+              )
+              Text(
+                text = "Tap to customize minutes & seconds",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+          }
+          Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.primaryContainer
+          ) {
+            Text(
+              text = "+${TimeFormatter.formatDurationSummary(settings.quickAddSeconds.toLong())}",
+              fontFamily = RobotoMonoFontFamily,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold,
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+            )
+          }
+        }
       }
     },
     confirmButton = {
@@ -369,4 +423,15 @@ fun SettingsDialog(
       }
     }
   )
+
+  if (showQuickAddDialog) {
+    EditQuickAddDialog(
+      initialTotalSeconds = settings.quickAddSeconds,
+      onDismiss = { showQuickAddDialog = false },
+      onConfirm = { mins, secs ->
+        viewModel.setQuickAddIncrement(mins, secs)
+        showQuickAddDialog = false
+      }
+    )
+  }
 }

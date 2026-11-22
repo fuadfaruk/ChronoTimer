@@ -109,6 +109,7 @@ class PresetRepository(context: Context) {
   private val KEY_WHITE_NOISE_ENABLED = "setting_white_noise_enabled"
   private val KEY_WHITE_NOISE_PROFILE = "setting_white_noise_profile"
   private val KEY_WHITE_NOISE_VOLUME = "setting_white_noise_volume"
+  private val KEY_QUICK_ADD_SECONDS = "setting_quick_add_seconds"
 
   fun getSoundEnabled(): Boolean = prefs.getBoolean(KEY_SOUND_ENABLED, true)
   fun setSoundEnabled(value: Boolean) = prefs.edit().putBoolean(KEY_SOUND_ENABLED, value).apply()
@@ -127,6 +128,9 @@ class PresetRepository(context: Context) {
 
   fun getWhiteNoiseVolume(): Float = prefs.getFloat(KEY_WHITE_NOISE_VOLUME, 0.7f)
   fun setWhiteNoiseVolume(volume: Float) = prefs.edit().putFloat(KEY_WHITE_NOISE_VOLUME, volume).apply()
+
+  fun getQuickAddSeconds(): Int = prefs.getInt(KEY_QUICK_ADD_SECONDS, 300).coerceAtLeast(1)
+  fun setQuickAddSeconds(seconds: Int) = prefs.edit().putInt(KEY_QUICK_ADD_SECONDS, seconds.coerceAtLeast(1)).apply()
 
   fun loadCustomPresets(): List<TimerPreset> {
     val raw = prefs.getString(KEY_CUSTOM_PRESETS, null) ?: return emptyList()

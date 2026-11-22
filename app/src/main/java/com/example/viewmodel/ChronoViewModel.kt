@@ -77,7 +77,8 @@ data class SettingsState(
   val whiteNoiseProfile: NoiseProfile = NoiseProfile.VOICE_MASKING,
   val whiteNoiseVolume: Float = 0.7f,
   val isWhiteNoisePlaying: Boolean = false,
-  val previewingProfile: NoiseProfile? = null
+  val previewingProfile: NoiseProfile? = null,
+  val quickAddSeconds: Int = 300
 )
 
 class ChronoViewModel(application: Application) : AndroidViewModel(application) {
@@ -136,7 +137,8 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
         NoiseProfile.VOICE_MASKING
       },
       whiteNoiseVolume = repository.getWhiteNoiseVolume(),
-      isWhiteNoisePlaying = false
+      isWhiteNoisePlaying = false,
+      quickAddSeconds = repository.getQuickAddSeconds()
     )
   )
   val settings: StateFlow<SettingsState> = _settings.asStateFlow()
@@ -820,6 +822,13 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     val next = !_settings.value.keepScreenOn
     _settings.update { it.copy(keepScreenOn = next) }
     repository.setKeepScreenOn(next)
+  }
+
+  fun setQuickAddIncrement(minutes: Int, seconds: Int) {
+    val totalSeconds = (minutes.coerceAtLeast(0) * 60 + seconds.coerceAtLeast(0)).coerceAtLeast(1)
+    _settings.update { it.copy(quickAddSeconds = totalSeconds) }
+    repository.setQuickAddSeconds(totalSeconds)
+    soundHapticHelper.playClickSound(_settings.value.soundEnabled)
   }
 
   fun toggleTheme() {

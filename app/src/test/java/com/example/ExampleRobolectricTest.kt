@@ -166,4 +166,27 @@ class ExampleRobolectricTest {
     vm.deleteCustomIntervalPreset("vm_test_preset")
     assertTrue(vm.customIntervalPresets.value.none { it.id == "vm_test_preset" })
   }
+
+  @Test
+  fun `test customizable timer quick add increment persistence and timer update`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val repository = PresetRepository(app)
+
+    // Default should be 300s (5m)
+    assertEquals(300, repository.getQuickAddSeconds())
+
+    val vm = com.example.viewmodel.ChronoViewModel(app)
+    assertEquals(300, vm.settings.value.quickAddSeconds)
+
+    // Customize to 2m 45s (165s)
+    vm.setQuickAddIncrement(minutes = 2, seconds = 45)
+    assertEquals(165, vm.settings.value.quickAddSeconds)
+    assertEquals(165, repository.getQuickAddSeconds())
+
+    val timerId = vm.timerState.value.selectedTimerId
+    val beforeMillis = vm.timerState.value.timers.first { it.id == timerId }.remainingMillis
+    vm.addTimeToTimer(timerId, vm.settings.value.quickAddSeconds.toLong())
+    val afterMillis = vm.timerState.value.timers.first { it.id == timerId }.remainingMillis
+    assertEquals(beforeMillis + 165_000L, afterMillis)
+  }
 }
