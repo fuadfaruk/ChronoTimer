@@ -336,7 +336,7 @@ fun AnimatedAudioWaves(
   color: Color = MaterialTheme.colorScheme.secondary
 ) {
   val transition = rememberInfiniteTransition(label = "audio_waves")
-  val phase by transition.animateFloat(
+  val phaseState = transition.animateFloat(
     initialValue = 0f,
     targetValue = (2.0 * PI).toFloat(),
     animationSpec = infiniteRepeatable(
@@ -351,6 +351,7 @@ fun AnimatedAudioWaves(
       .width(22.dp)
       .height(16.dp)
   ) {
+    val phase = phaseState.value
     val barCount = 5
     val spacing = size.width / barCount
     val centerY = size.height / 2f

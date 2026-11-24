@@ -60,7 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,8 +74,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.PresetDefaults
 import com.example.model.IntervalConfig
 import com.example.model.IntervalPhase
@@ -92,32 +94,68 @@ import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.ui.theme.contrastingContentColor
 import com.example.ui.theme.resolveThemeAccentColor
 import com.example.viewmodel.ChronoViewModel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+@Immutable
+private data class IntervalScreenMeta(
+  val config: IntervalConfig,
+  val phase: IntervalPhase,
+  val currentSet: Int,
+  val currentStepIndex: Int,
+  val isRunning: Boolean
+)
 
 @Composable
 fun IntervalScreen(
   viewModel: ChronoViewModel,
   modifier: Modifier = Modifier
 ) {
-  val intervalState by viewModel.intervalState.collectAsState()
-  val customIntervalPresets by viewModel.customIntervalPresets.collectAsState()
-  val settings by viewModel.settings.collectAsState()
+  val metaFlow = remember(viewModel) {
+    viewModel.intervalState
+      .map { s ->
+        IntervalScreenMeta(
+          config = s.config,
+          phase = s.phase,
+          currentSet = s.currentSet,
+          currentStepIndex = s.currentStepIndex,
+          isRunning = s.isRunning
+        )
+      }
+      .distinctUntilChanged()
+  }
+  val isNoisePlayingFlow = remember(viewModel) {
+    viewModel.settings
+      .map { it.isWhiteNoisePlaying }
+      .distinctUntilChanged()
+  }
+
+  val initialMeta = remember {
+    val s = viewModel.intervalState.value
+    IntervalScreenMeta(s.config, s.phase, s.currentSet, s.currentStepIndex, s.isRunning)
+  }
+  val meta by metaFlow.collectAsStateWithLifecycle(initialValue = initialMeta)
+  val isWhiteNoisePlaying by isNoisePlayingFlow.collectAsStateWithLifecycle(
+    initialValue = viewModel.settings.value.isWhiteNoisePlaying
+  )
+  val customIntervalPresets by viewModel.customIntervalPresets.collectAsStateWithLifecycle()
 
   var showQuickCustomDialog by remember { mutableStateOf(false) }
   var showPresetEditor by remember { mutableStateOf(false) }
   var editingPreset by remember { mutableStateOf<IntervalConfig?>(null) }
   var showWhiteNoiseSheet by remember { mutableStateOf(false) }
 
-  val config = intervalState.config
-  val currentStep = intervalState.currentStep
+  val config = meta.config
+  val currentStep = config.steps.getOrNull(meta.currentStepIndex)
 
   val colorScheme = MaterialTheme.colorScheme
   val targetPhaseColor = when {
-    intervalState.phase == IntervalPhase.FINISHED -> colorScheme.tertiary
+    meta.phase == IntervalPhase.FINISHED -> colorScheme.tertiary
     config.isMultiStep && currentStep != null -> resolveThemeAccentColor(currentStep.colorHex, colorScheme)
-    intervalState.phase == IntervalPhase.READY -> colorScheme.primary
-    intervalState.phase == IntervalPhase.PREPARE -> colorScheme.tertiary
-    intervalState.phase == IntervalPhase.WORK -> colorScheme.secondary
-    intervalState.phase == IntervalPhase.REST -> colorScheme.primary
+    meta.phase == IntervalPhase.READY -> colorScheme.primary
+    meta.phase == IntervalPhase.PREPARE -> colorScheme.tertiary
+    meta.phase == IntervalPhase.WORK -> colorScheme.secondary
+    meta.phase == IntervalPhase.REST -> colorScheme.primary
     else -> colorScheme.primary
   }
 
@@ -128,30 +166,30 @@ fun IntervalScreen(
   )
 
   val phaseBadgeText = if (config.isMultiStep && currentStep != null) {
-    when (intervalState.phase) {
+    when (meta.phase) {
       IntervalPhase.FINISHED -> "SESSION COMPLETE!"
       else -> {
-        val stepPart = "STEP ${intervalState.currentStepIndex + 1}/${config.steps.size}"
-        val cyclePart = if (config.repeatCount > 1) " • CYCLE ${intervalState.currentSet}/${config.repeatCount}" else ""
+        val stepPart = "STEP ${meta.currentStepIndex + 1}/${config.steps.size}"
+        val cyclePart = if (config.repeatCount > 1) " • CYCLE ${meta.currentSet}/${config.repeatCount}" else ""
         "${currentStep.name.uppercase()} • $stepPart$cyclePart"
       }
     }
   } else {
-    val phaseTitle = when (intervalState.phase) {
+    val phaseTitle = when (meta.phase) {
       IntervalPhase.READY -> "READY TO STUDY"
       IntervalPhase.PREPARE -> "GET READY"
       IntervalPhase.WORK -> "STUDY FOCUS"
       IntervalPhase.REST -> "BREAK TIME"
       IntervalPhase.FINISHED -> "SESSION COMPLETE!"
     }
-    "$phaseTitle • SET ${intervalState.currentSet}/${config.sets}"
+    "$phaseTitle • SET ${meta.currentSet}/${config.sets}"
   }
 
   val resetInteraction = remember { MutableInteractionSource() }
   val startPauseInteraction = remember { MutableInteractionSource() }
   val secondaryActionInteraction = remember { MutableInteractionSource() }
 
-  val targetStartBg = if (intervalState.isRunning) colorScheme.error else targetPhaseColor
+  val targetStartBg = if (meta.isRunning) colorScheme.error else targetPhaseColor
   val startBtnBgColor by animateColorAsState(
     targetValue = targetStartBg,
     animationSpec = tween(320, easing = FastOutSlowInEasing),
@@ -171,7 +209,6 @@ fun IntervalScreen(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.Center
   ) {
-    // 1. Interval Mode Selector Row (Built-in routines, Custom routines, + Custom)
     Row(
       modifier = Modifier
         .fillMaxWidth()
@@ -182,7 +219,6 @@ fun IntervalScreen(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
-        // Built-in Default Interval Modes
         PresetDefaults.defaultIntervalConfigs.forEach { defaultConfig ->
           val isSelected = config.id == defaultConfig.id
           val chipInteraction = remember(defaultConfig.id) { MutableInteractionSource() }
@@ -206,7 +242,6 @@ fun IntervalScreen(
           )
         }
 
-        // Saved Custom Interval Routines
         customIntervalPresets.forEach { preset ->
           val isSelected = config.id == preset.id
           val chipInteraction = remember(preset.id) { MutableInteractionSource() }
@@ -234,7 +269,6 @@ fun IntervalScreen(
           )
         }
 
-        // + Custom Multi-Interval Builder
         val addChipInteraction = remember { MutableInteractionSource() }
         FilterChip(
           selected = config.id == "custom",
@@ -273,7 +307,6 @@ fun IntervalScreen(
       }
     }
 
-    // Selected Custom Preset Header (Summary + Edit Button)
     AnimatedVisibility(
       visible = config.isCustom,
       enter = fadeIn(tween(240)) + expandVertically(),
@@ -332,7 +365,6 @@ fun IntervalScreen(
 
     Spacer(modifier = Modifier.height(12.dp))
 
-    // 2. Phase & Step Badge
     Surface(
       shape = RoundedCornerShape(16.dp),
       color = phaseColor.copy(alpha = 0.12f),
@@ -370,11 +402,10 @@ fun IntervalScreen(
       }
     }
 
-    // Active Interval Background Sound Pill (for custom multi-step presets)
     if (config.isMultiStep && currentStep != null) {
       Spacer(modifier = Modifier.height(8.dp))
       val stepSound = currentStep.backgroundSound
-      val isPlayingStepSound = intervalState.isRunning && stepSound != null && settings.isWhiteNoisePlaying
+      val isPlayingStepSound = meta.isRunning && stepSound != null && isWhiteNoisePlaying
       val soundPillInteraction = remember { MutableInteractionSource() }
       val soundPillBg by animateColorAsState(
         targetValue = if (isPlayingStepSound) {
@@ -436,16 +467,13 @@ fun IntervalScreen(
 
     Spacer(modifier = Modifier.height(14.dp))
 
-    // 3. Dynamic Progress Arc
-    CircularProgressTimerArc(
-      progress = intervalState.progressInPhase,
-      remainingMillis = intervalState.phaseRemainingSeconds * 1000L,
-      isRunning = intervalState.isRunning,
-      timerColor = phaseColor,
+    IntervalDialContainer(
+      viewModel = viewModel,
+      isRunning = meta.isRunning,
+      phaseColor = phaseColor,
       size = if (config.isMultiStep) 224.dp else 250.dp
     )
 
-    // 4. Interval Sequence Timeline Strip (when multi-step preset is selected)
     if (config.isMultiStep && config.steps.isNotEmpty()) {
       Spacer(modifier = Modifier.height(14.dp))
       Row(
@@ -455,11 +483,11 @@ fun IntervalScreen(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
       ) {
         config.steps.forEachIndexed { idx, step ->
-          val isActive = idx == intervalState.currentStepIndex && intervalState.phase != IntervalPhase.FINISHED
-          val isCompleted = intervalState.phase == IntervalPhase.FINISHED || idx < intervalState.currentStepIndex
+          val isActive = idx == meta.currentStepIndex && meta.phase != IntervalPhase.FINISHED
+          val isCompleted = meta.phase == IntervalPhase.FINISHED || idx < meta.currentStepIndex
           val stepColor = resolveThemeAccentColor(step.colorHex, colorScheme)
           val stepInteraction = remember(step.id) { MutableInteractionSource() }
-          val stepScale by animateFloatAsState(
+          val stepScaleState = animateFloatAsState(
             targetValue = if (isActive) 1.03f else 1f,
             animationSpec = spring(
               dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -483,8 +511,9 @@ fun IntervalScreen(
             modifier = Modifier
               .widthIn(min = 116.dp, max = 160.dp)
               .graphicsLayer {
-                scaleX = stepScale
-                scaleY = stepScale
+                val s = stepScaleState.value
+                scaleX = s
+                scaleY = s
               }
               .fluidPressScale(stepInteraction)
               .clip(RoundedCornerShape(12.dp))
@@ -565,13 +594,11 @@ fun IntervalScreen(
 
     Spacer(modifier = Modifier.height(18.dp))
 
-    // 5. Minimal Controls
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.Center,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // Reset button
       FilledTonalButton(
         onClick = { viewModel.resetInterval() },
         interactionSource = resetInteraction,
@@ -592,10 +619,9 @@ fun IntervalScreen(
 
       Spacer(modifier = Modifier.width(18.dp))
 
-      // Start / Pause Primary Button
       Button(
         onClick = {
-          if (intervalState.isRunning) viewModel.pauseInterval() else viewModel.startInterval()
+          if (meta.isRunning) viewModel.pauseInterval() else viewModel.startInterval()
         },
         interactionSource = startPauseInteraction,
         colors = ButtonDefaults.buttonColors(
@@ -606,11 +632,11 @@ fun IntervalScreen(
         modifier = Modifier
           .height(60.dp)
           .width(140.dp)
-          .fluidPulseHalo(color = startBtnBgColor, isActive = intervalState.isRunning)
+          .fluidPulseHalo(color = startBtnBgColor, isActive = meta.isRunning)
           .fluidPressScale(startPauseInteraction)
           .testTag("interval_start_pause_btn")
       ) {
-        FluidAnimatedValue(targetState = intervalState.isRunning) { running ->
+        FluidAnimatedValue(targetState = meta.isRunning) { running ->
           Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
               imageVector = if (running) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -630,7 +656,6 @@ fun IntervalScreen(
       Spacer(modifier = Modifier.width(18.dp))
 
       if (config.isMultiStep && config.steps.size > 1) {
-        // Skip to Next Interval Step
         FilledTonalButton(
           onClick = { viewModel.skipToNextIntervalStep() },
           interactionSource = secondaryActionInteraction,
@@ -649,7 +674,6 @@ fun IntervalScreen(
           )
         }
       } else {
-        // Quick Settings/Configure
         FilledTonalButton(
           onClick = { showQuickCustomDialog = true },
           interactionSource = secondaryActionInteraction,
@@ -671,10 +695,9 @@ fun IntervalScreen(
     }
   }
 
-  // Quick 2-phase Interval Builder Dialog
   if (showQuickCustomDialog) {
     CustomIntervalDialog(
-      current = intervalState.config,
+      current = meta.config,
       onDismiss = { showQuickCustomDialog = false },
       onSave = { warmup, work, rest, sets ->
         viewModel.updateCustomInterval(warmup, work, rest, sets)
@@ -688,7 +711,6 @@ fun IntervalScreen(
     )
   }
 
-  // Full Custom Multi-Interval Preset Builder / Editor
   if (showPresetEditor) {
     CustomIntervalPresetEditorDialog(
       viewModel = viewModel,
@@ -705,13 +727,39 @@ fun IntervalScreen(
     )
   }
 
-  // Audio volume / focus noise sheet
   if (showWhiteNoiseSheet) {
     WhiteNoiseSheet(
       viewModel = viewModel,
       onDismiss = { showWhiteNoiseSheet = false }
     )
   }
+}
+
+@Composable
+private fun IntervalDialContainer(
+  viewModel: ChronoViewModel,
+  isRunning: Boolean,
+  phaseColor: Color,
+  size: Dp
+) {
+  val dialFlow = remember(viewModel) {
+    viewModel.intervalState
+      .map { it.progressInPhase to it.phaseRemainingSeconds }
+      .distinctUntilChanged()
+  }
+  val initialPair = remember {
+    val s = viewModel.intervalState.value
+    s.progressInPhase to s.phaseRemainingSeconds
+  }
+  val (progress, remainingSeconds) = dialFlow.collectAsStateWithLifecycle(initialValue = initialPair).value
+
+  CircularProgressTimerArc(
+    progress = progress,
+    remainingMillis = remainingSeconds * 1000L,
+    isRunning = isRunning,
+    timerColor = phaseColor,
+    size = size
+  )
 }
 
 @Composable

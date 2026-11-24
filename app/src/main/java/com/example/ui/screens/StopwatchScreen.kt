@@ -42,17 +42,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.TimeFormatter
 import com.example.ui.components.FluidAnimatedValue
 import com.example.ui.components.StopwatchAnalogDigitalDial
@@ -66,7 +65,8 @@ fun StopwatchScreen(
   viewModel: ChronoViewModel,
   modifier: Modifier = Modifier
 ) {
-  val state by viewModel.stopwatchState.collectAsState()
+  // Controls & laps only recompose on start/pause/reset/lap events—never on 16ms elapsed ticks
+  val controlsState by viewModel.stopwatchControlsState.collectAsStateWithLifecycle()
   val context = LocalContext.current
 
   val resetInteraction = remember { MutableInteractionSource() }
@@ -74,12 +74,12 @@ fun StopwatchScreen(
   val lapInteraction = remember { MutableInteractionSource() }
 
   val primaryBtnColor by animateColorAsState(
-    targetValue = if (state.isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+    targetValue = if (controlsState.isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
     animationSpec = tween(320, easing = FastOutSlowInEasing),
     label = "stopwatch_btn_color"
   )
   val primaryContentColor by animateColorAsState(
-    targetValue = if (state.isRunning) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
+    targetValue = if (controlsState.isRunning) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
     animationSpec = tween(320, easing = FastOutSlowInEasing),
     label = "stopwatch_btn_content"
   )
@@ -92,12 +92,8 @@ fun StopwatchScreen(
   ) {
     Spacer(modifier = Modifier.height(10.dp))
 
-    // Minimalist Dial
-    StopwatchAnalogDigitalDial(
-      elapsedMillis = state.elapsedMillis,
-      isRunning = state.isRunning,
-      size = 250.dp
-    )
+    // Isolated 60fps dial readout scope
+    StopwatchDialSection(viewModel = viewModel)
 
     Spacer(modifier = Modifier.height(20.dp))
 
@@ -107,10 +103,9 @@ fun StopwatchScreen(
       horizontalArrangement = Arrangement.Center,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // Reset Button
       FilledTonalButton(
         onClick = { viewModel.resetStopwatch() },
-        enabled = state.elapsedMillis > 0L && !state.isRunning,
+        enabled = controlsState.hasElapsed && !controlsState.isRunning,
         interactionSource = resetInteraction,
         shape = CircleShape,
         modifier = Modifier
@@ -122,7 +117,7 @@ fun StopwatchScreen(
         Icon(
           imageVector = Icons.Default.Refresh,
           contentDescription = "Reset Stopwatch",
-          tint = if (state.elapsedMillis > 0L && !state.isRunning)
+          tint = if (controlsState.hasElapsed && !controlsState.isRunning)
             MaterialTheme.colorScheme.onSurface
           else
             MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
@@ -132,10 +127,9 @@ fun StopwatchScreen(
 
       Spacer(modifier = Modifier.width(18.dp))
 
-      // Start / Pause Primary Button
       Button(
         onClick = {
-          if (state.isRunning) viewModel.pauseStopwatch() else viewModel.startStopwatch()
+          if (controlsState.isRunning) viewModel.pauseStopwatch() else viewModel.startStopwatch()
         },
         interactionSource = startPauseInteraction,
         colors = ButtonDefaults.buttonColors(
@@ -146,11 +140,11 @@ fun StopwatchScreen(
         modifier = Modifier
           .height(60.dp)
           .width(140.dp)
-          .fluidPulseHalo(color = primaryBtnColor, isActive = state.isRunning)
+          .fluidPulseHalo(color = primaryBtnColor, isActive = controlsState.isRunning)
           .fluidPressScale(startPauseInteraction)
           .testTag("stopwatch_start_pause_btn")
       ) {
-        FluidAnimatedValue(targetState = state.isRunning) { running ->
+        FluidAnimatedValue(targetState = controlsState.isRunning) { running ->
           Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
               imageVector = if (running) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -169,10 +163,9 @@ fun StopwatchScreen(
 
       Spacer(modifier = Modifier.width(18.dp))
 
-      // Lap / Split Button
       FilledTonalButton(
         onClick = { viewModel.recordLap() },
-        enabled = state.isRunning,
+        enabled = controlsState.isRunning,
         interactionSource = lapInteraction,
         shape = CircleShape,
         modifier = Modifier
@@ -184,7 +177,7 @@ fun StopwatchScreen(
         Icon(
           imageVector = Icons.Default.Flag,
           contentDescription = "Record Lap",
-          tint = if (state.isRunning)
+          tint = if (controlsState.isRunning)
             MaterialTheme.colorScheme.primary
           else
             MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
@@ -195,9 +188,8 @@ fun StopwatchScreen(
 
     Spacer(modifier = Modifier.height(16.dp))
 
-    // Minimal Laps Header
     AnimatedVisibility(
-      visible = state.laps.isNotEmpty(),
+      visible = controlsState.laps.isNotEmpty(),
       enter = fadeIn(tween(240)) + expandVertically(),
       exit = fadeOut(tween(180)) + shrinkVertically()
     ) {
@@ -209,7 +201,7 @@ fun StopwatchScreen(
         verticalAlignment = Alignment.CenterVertically
       ) {
         Text(
-          text = "LAPS (${state.laps.size})",
+          text = "LAPS (${controlsState.laps.size})",
           style = MaterialTheme.typography.labelSmall,
           fontWeight = FontWeight.Bold,
           color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -217,9 +209,10 @@ fun StopwatchScreen(
 
         IconButton(
           onClick = {
+            val current = viewModel.stopwatchState.value
             val summary = StringBuilder("ChronoTimer Laps\n\n")
-            summary.append("Total Time: ${TimeFormatter.formatStopwatch(state.elapsedMillis)}\n")
-            state.laps.forEach { lap ->
+            summary.append("Total Time: ${TimeFormatter.formatStopwatch(current.elapsedMillis)}\n")
+            current.laps.forEach { lap ->
               summary.append("Lap ${lap.lapNumber}: ${TimeFormatter.formatStopwatch(lap.lapTimeMillis)}\n")
             }
             val intent = Intent(Intent.ACTION_SEND).apply {
@@ -240,16 +233,15 @@ fun StopwatchScreen(
       }
     }
 
-    // Sleek minimal Laps list with smooth spring item placement
     LazyColumn(
       modifier = Modifier
         .fillMaxWidth()
         .weight(1f),
       verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-      itemsIndexed(state.laps, key = { _, lap -> lap.lapNumber }) { index, lap ->
-        val isFastest = state.stats.bestLapIndex == index
-        val isSlowest = state.stats.worstLapIndex == index
+      itemsIndexed(controlsState.laps, key = { _, lap -> lap.lapNumber }) { index, lap ->
+        val isFastest = controlsState.stats.bestLapIndex == index
+        val isSlowest = controlsState.stats.worstLapIndex == index
         val cardColor by animateColorAsState(
           targetValue = when {
             isFastest -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
@@ -305,4 +297,14 @@ fun StopwatchScreen(
       }
     }
   }
+}
+
+@Composable
+private fun StopwatchDialSection(viewModel: ChronoViewModel) {
+  val state by viewModel.stopwatchState.collectAsStateWithLifecycle()
+  StopwatchAnalogDigitalDial(
+    elapsedMillis = state.elapsedMillis,
+    isRunning = state.isRunning,
+    size = 250.dp
+  )
 }

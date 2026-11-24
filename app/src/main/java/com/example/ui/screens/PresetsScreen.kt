@@ -58,7 +58,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -74,6 +74,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.PresetDefaults
 import com.example.model.IntervalConfig
 import com.example.model.TimeFormatter
@@ -87,18 +88,29 @@ import com.example.ui.theme.contrastingContentColor
 import com.example.ui.theme.resolveThemeAccentColor
 import com.example.viewmodel.AppTab
 import com.example.viewmodel.ChronoViewModel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
+@Immutable
 private sealed interface PresetListItem {
   val key: String
 
+  @Immutable
   data class Timer(val preset: TimerPreset, val isCustom: Boolean) : PresetListItem {
     override val key: String = "timer_${preset.id}"
   }
 
+  @Immutable
   data class Interval(val config: IntervalConfig, val isCustom: Boolean) : PresetListItem {
     override val key: String = "interval_${config.id}"
   }
 }
+
+@Immutable
+private data class RunningTimerSummary(
+  val id: String,
+  val title: String
+)
 
 private val presetColorPalette = listOf(
   0xFF00E5FFL,
@@ -113,13 +125,36 @@ fun PresetsScreen(
   viewModel: ChronoViewModel,
   modifier: Modifier = Modifier
 ) {
-  val customPresets by viewModel.customPresets.collectAsState()
-  val customIntervalPresets by viewModel.customIntervalPresets.collectAsState()
-  val timerState by viewModel.timerState.collectAsState()
-  val intervalState by viewModel.intervalState.collectAsState()
+  val customPresets by viewModel.customPresets.collectAsStateWithLifecycle()
+  val customIntervalPresets by viewModel.customIntervalPresets.collectAsStateWithLifecycle()
+
+  // Distinct low-frequency flows so 100ms ticks never recompose the preset list
+  val runningBannerFlow = remember(viewModel) {
+    viewModel.timerState
+      .map { s -> s.timers.firstOrNull { it.isRunning }?.let { RunningTimerSummary(it.id, it.title) } }
+      .distinctUntilChanged()
+  }
+  val runningSignaturesFlow = remember(viewModel) {
+    viewModel.timerState
+      .map { s ->
+        s.timers.filter { it.isRunning }
+          .map { it.title to it.initialDurationMillis }
+          .toSet()
+      }
+      .distinctUntilChanged()
+  }
+  val runningIntervalIdFlow = remember(viewModel) {
+    viewModel.intervalState
+      .map { if (it.isRunning) it.config.id else null }
+      .distinctUntilChanged()
+  }
+
+  val runningSummary by runningBannerFlow.collectAsStateWithLifecycle(initialValue = null)
+  val runningSignatures by runningSignaturesFlow.collectAsStateWithLifecycle(initialValue = emptySet())
+  val runningIntervalId by runningIntervalIdFlow.collectAsStateWithLifecycle(initialValue = null)
 
   var selectedCategory by remember { mutableStateOf("All") }
-  val categories = listOf("All", "Study", "Break", "Intervals", "Custom")
+  val categories = remember { listOf("All", "Study", "Break", "Intervals", "Custom") }
 
   val itemsToShow = remember(customPresets, customIntervalPresets, selectedCategory) {
     val timerItems = (customPresets + PresetDefaults.defaultTimerPresets).map { preset ->
@@ -152,7 +187,6 @@ fun PresetsScreen(
   var editingIntervalPreset by remember { mutableStateOf<IntervalConfig?>(null) }
 
   val colorScheme = MaterialTheme.colorScheme
-  val runningTimer = timerState.timers.firstOrNull { it.isRunning }
   val fabInteraction = remember { MutableInteractionSource() }
 
   Scaffold(
@@ -184,13 +218,12 @@ fun PresetsScreen(
         .padding(padding)
         .padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
-      // Active Running Timer Banner (if a timer is running, allow jumping back to it)
       AnimatedVisibility(
-        visible = runningTimer != null,
+        visible = runningSummary != null,
         enter = fadeIn(tween(240)) + expandVertically(),
         exit = fadeOut(tween(180)) + shrinkVertically()
       ) {
-        runningTimer?.let { running ->
+        runningSummary?.let { running ->
           val bannerInteraction = remember(running.id) { MutableInteractionSource() }
           Surface(
             shape = RoundedCornerShape(14.dp),
@@ -234,19 +267,12 @@ fun PresetsScreen(
                   overflow = TextOverflow.Ellipsis
                 )
               }
-              Text(
-                text = TimeFormatter.formatTimer(running.remainingMillis),
-                fontFamily = RobotoMonoFontFamily,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
-              )
+              RunningBannerCountdownText(viewModel = viewModel, timerId = running.id)
             }
           }
         }
       }
 
-      // Category Pills
       LazyRow(
         modifier = Modifier
           .fillMaxWidth()
@@ -271,7 +297,6 @@ fun PresetsScreen(
         }
       }
 
-      // Presets List
       if (itemsToShow.isEmpty()) {
         Box(
           modifier = Modifier
@@ -316,10 +341,7 @@ fun PresetsScreen(
               is PresetListItem.Timer -> {
                 val preset = item.preset
                 val accentColor = resolveThemeAccentColor(preset.colorHex, colorScheme)
-                val isTimerActive = timerState.timers.any {
-                  it.isRunning && it.title == preset.title &&
-                    it.initialDurationMillis == preset.durationSeconds * 1000L
-                }
+                val isTimerActive = (preset.title to preset.durationSeconds * 1000L) in runningSignatures
                 val startInteraction = remember(item.key) { MutableInteractionSource() }
                 val borderColor by animateColorAsState(
                   targetValue = if (isTimerActive) MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
@@ -437,7 +459,7 @@ fun PresetsScreen(
                 } else {
                   colorScheme.secondary
                 }
-                val isRunningThis = intervalState.isRunning && intervalState.config.id == config.id
+                val isRunningThis = runningIntervalId == config.id
                 val soundCount = config.steps.count { it.backgroundSound != null }
                 val subtitle = if (config.isMultiStep) {
                   val base = "${config.steps.size} intervals • ${TimeFormatter.formatDurationSummary(config.totalDurationSeconds.toLong())}"
@@ -622,6 +644,34 @@ fun PresetsScreen(
 }
 
 @Composable
+private fun RunningBannerCountdownText(
+  viewModel: ChronoViewModel,
+  timerId: String
+) {
+  val textFlow = remember(viewModel, timerId) {
+    viewModel.timerState
+      .map { s ->
+        val millis = s.timers.find { it.id == timerId }?.remainingMillis ?: 0L
+        TimeFormatter.formatTimer(millis)
+      }
+      .distinctUntilChanged()
+  }
+  val initialText = remember(timerId) {
+    val millis = viewModel.timerState.value.timers.find { it.id == timerId }?.remainingMillis ?: 0L
+    TimeFormatter.formatTimer(millis)
+  }
+  val formatted by textFlow.collectAsStateWithLifecycle(initialValue = initialText)
+
+  Text(
+    text = formatted,
+    fontFamily = RobotoMonoFontFamily,
+    fontSize = 13.sp,
+    fontWeight = FontWeight.Bold,
+    color = MaterialTheme.colorScheme.onSecondaryContainer
+  )
+}
+
+@Composable
 fun AddCustomPresetDialog(
   defaultCategory: String = "Custom",
   onDismiss: () -> Unit,
@@ -648,7 +698,6 @@ fun AddCustomPresetDialog(
           modifier = Modifier.fillMaxWidth()
         )
 
-        // Category Selector
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -664,7 +713,6 @@ fun AddCustomPresetDialog(
           }
         }
 
-        // Color Picker Dots
         Row(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(10.dp)

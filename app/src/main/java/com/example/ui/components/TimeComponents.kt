@@ -35,12 +35,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -60,6 +61,31 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
+private class StopwatchDialCache {
+  val outerBlobPath = Path()
+  val innerBlobPath = Path()
+  val xBuffer = FloatArray(12)
+  val yBuffer = FloatArray(12)
+
+  // Precomputed 60 dial tick coordinates
+  val tickStartX = FloatArray(60)
+  val tickStartY = FloatArray(60)
+  val tickEndX = FloatArray(60)
+  val tickEndY = FloatArray(60)
+  var lastTickSize = -1f
+  var lastOuterRadius = -1f
+
+  var lastPrimary = Color.Unspecified
+  var lastSecondary = Color.Unspecified
+  var outerHaloBrush: Brush? = null
+  var innerBlobBrush: Brush? = null
+  var sweepArcBrush: Brush? = null
+  var bgRadialBrush: Brush? = null
+  var lastBgSize = -1f
+  var lastSurfaceVariant = Color.Unspecified
+  var lastSurface = Color.Unspecified
+}
+
 @Composable
 fun StopwatchAnalogDigitalDial(
   elapsedMillis: Long,
@@ -70,7 +96,7 @@ fun StopwatchAnalogDigitalDial(
   val (mainTime, decimal) = TimeFormatter.formatStopwatchParts(elapsedMillis)
 
   val infiniteTransition = rememberInfiniteTransition(label = "dial_glow")
-  val pulseAlpha by infiniteTransition.animateFloat(
+  val pulseAlphaState = infiniteTransition.animateFloat(
     initialValue = 0.35f,
     targetValue = 0.85f,
     animationSpec = infiniteRepeatable(
@@ -79,7 +105,7 @@ fun StopwatchAnalogDigitalDial(
     ),
     label = "pulse_alpha"
   )
-  val blobPhase by infiniteTransition.animateFloat(
+  val blobPhaseState = infiniteTransition.animateFloat(
     initialValue = 0f,
     targetValue = (2.0 * PI).toFloat(),
     animationSpec = infiniteRepeatable(
@@ -89,7 +115,7 @@ fun StopwatchAnalogDigitalDial(
     label = "stopwatch_blob_phase"
   )
 
-  val runningWeight by animateFloatAsState(
+  val runningWeightState = animateFloatAsState(
     targetValue = if (isRunning) 1f else 0f,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -98,7 +124,7 @@ fun StopwatchAnalogDigitalDial(
     label = "stopwatch_running_weight"
   )
 
-  val dialScale by animateFloatAsState(
+  val dialScaleState = animateFloatAsState(
     targetValue = if (isRunning) 1.02f else 1f,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -116,46 +142,79 @@ fun StopwatchAnalogDigitalDial(
   val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
   val outlineColor = MaterialTheme.colorScheme.outline
 
-  val outerBlobPath = remember { Path() }
-  val innerBlobPath = remember { Path() }
+  val cache = remember { StopwatchDialCache() }
 
   Box(
     modifier = modifier
       .size(size)
       .graphicsLayer {
-        scaleX = dialScale
-        scaleY = dialScale
+        val s = dialScaleState.value
+        scaleX = s
+        scaleY = s
       },
     contentAlignment = Alignment.Center
   ) {
-    // Organic Morphing Outer Blob Halo
+    // Organic Morphing Outer Blob Halo (cached radial shader, zero per-frame allocations)
     Canvas(modifier = Modifier.fillMaxSize()) {
-      val center = Offset(this.size.width / 2f, this.size.height / 2f)
+      val centerX = this.size.width / 2f
+      val centerY = this.size.height / 2f
       val baseRadius = this.size.minDimension / 2f
+      val runningWeight = runningWeightState.value
+      val blobPhase = blobPhaseState.value
       val auraBoost = 0.88f + 0.14f * runningWeight
 
+      if (cache.outerHaloBrush == null ||
+        cache.lastOuterRadius != baseRadius ||
+        cache.lastPrimary != primaryColor ||
+        cache.lastSecondary != secondaryColor
+      ) {
+        cache.lastOuterRadius = baseRadius
+        cache.lastPrimary = primaryColor
+        cache.lastSecondary = secondaryColor
+        cache.outerHaloBrush = Brush.radialGradient(
+          colors = listOf(
+            primaryColor.copy(alpha = 0.30f),
+            secondaryColor.copy(alpha = 0.10f),
+            Color.Transparent
+          ),
+          center = Offset.Zero,
+          radius = (baseRadius * 1.15f).coerceAtLeast(1f)
+        )
+        cache.innerBlobBrush = Brush.radialGradient(
+          colors = listOf(
+            primaryColor.copy(alpha = 0.14f),
+            Color.Transparent
+          ),
+          center = Offset.Zero,
+          radius = (baseRadius * 0.9f).coerceAtLeast(1f)
+        )
+        cache.sweepArcBrush = Brush.sweepGradient(
+          colors = listOf(
+            primaryColor.copy(alpha = 0.15f),
+            primaryColor
+          )
+        )
+      }
+
       createOrganicBlobPath(
-        center = center,
+        center = Offset.Zero,
         baseRadius = baseRadius * 0.96f * auraBoost,
         phase = blobPhase,
         pointCount = 12,
         wobbleAmplitude = 0.055f + 0.03f * runningWeight,
         harmonicA = 3,
         harmonicB = 4,
-        path = outerBlobPath
+        path = cache.outerBlobPath,
+        xBuffer = cache.xBuffer,
+        yBuffer = cache.yBuffer
       )
-      drawPath(
-        path = outerBlobPath,
-        brush = Brush.radialGradient(
-          colors = listOf(
-            primaryColor.copy(alpha = 0.16f + 0.14f * runningWeight),
-            secondaryColor.copy(alpha = 0.08f * runningWeight),
-            Color.Transparent
-          ),
-          center = center,
-          radius = baseRadius * 1.15f
+      translate(left = centerX, top = centerY) {
+        drawPath(
+          path = cache.outerBlobPath,
+          brush = cache.outerHaloBrush!!,
+          alpha = (0.55f + 0.45f * runningWeight).coerceIn(0f, 1f)
         )
-      )
+      }
     }
 
     Box(
@@ -163,54 +222,59 @@ fun StopwatchAnalogDigitalDial(
         .fillMaxSize()
         .padding(8.dp)
         .clip(CircleShape)
-        .background(
-          Brush.radialGradient(
-            colors = listOf(
-              surfaceVariant.copy(alpha = 0.85f),
-              surfaceColor.copy(alpha = 0.96f)
-            )
-          )
-        )
-        .border(
-          width = 1.5.dp,
-          brush = Brush.sweepGradient(
-            colors = listOf(
-              outlineColor.copy(alpha = 0.45f),
-              primaryColor.copy(alpha = 0.35f + 0.35f * runningWeight),
-              outlineColor.copy(alpha = 0.45f)
-            )
-          ),
-          shape = CircleShape
-        ),
+        .border(1.5.dp, outlineColor.copy(alpha = 0.45f), CircleShape),
       contentAlignment = Alignment.Center
     ) {
       Canvas(modifier = Modifier.fillMaxSize()) {
-        val center = Offset(this.size.width / 2f, this.size.height / 2f)
-        val radius = this.size.width / 2f - 14.dp.toPx()
+        val w = this.size.width
+        val center = Offset(w / 2f, this.size.height / 2f)
+        val radius = w / 2f - 14.dp.toPx()
+        val runningWeight = runningWeightState.value
+        val blobPhase = blobPhaseState.value
+        val pulseAlpha = pulseAlphaState.value
+
+        if (cache.bgRadialBrush == null ||
+          cache.lastBgSize != w ||
+          cache.lastSurfaceVariant != surfaceVariant ||
+          cache.lastSurface != surfaceColor
+        ) {
+          cache.lastBgSize = w
+          cache.lastSurfaceVariant = surfaceVariant
+          cache.lastSurface = surfaceColor
+          cache.bgRadialBrush = Brush.radialGradient(
+            colors = listOf(
+              surfaceVariant.copy(alpha = 0.85f),
+              surfaceColor.copy(alpha = 0.96f)
+            ),
+            center = center,
+            radius = (w * 0.5f).coerceAtLeast(1f)
+          )
+        }
+
+        // Dial background fill
+        drawCircle(brush = cache.bgRadialBrush!!)
 
         // Subtle inner fluid morphing blob when running
-        if (runningWeight > 0.02f) {
+        if (runningWeight > 0.02f && cache.innerBlobBrush != null) {
           createOrganicBlobPath(
-            center = center,
+            center = Offset.Zero,
             baseRadius = radius * 0.72f,
             phase = -blobPhase * 1.3f,
             pointCount = 10,
             wobbleAmplitude = 0.09f,
             harmonicA = 2,
             harmonicB = 3,
-            path = innerBlobPath
+            path = cache.innerBlobPath,
+            xBuffer = cache.xBuffer,
+            yBuffer = cache.yBuffer
           )
-          drawPath(
-            path = innerBlobPath,
-            brush = Brush.radialGradient(
-              colors = listOf(
-                primaryColor.copy(alpha = 0.14f * runningWeight),
-                Color.Transparent
-              ),
-              center = center,
-              radius = radius * 0.9f
+          translate(left = center.x, top = center.y) {
+            drawPath(
+              path = cache.innerBlobPath,
+              brush = cache.innerBlobBrush!!,
+              alpha = runningWeight.coerceIn(0f, 1f)
             )
-          )
+          }
         }
 
         // Outer track circle
@@ -221,25 +285,34 @@ fun StopwatchAnalogDigitalDial(
           style = Stroke(width = 1.dp.toPx())
         )
 
-        // Draw dial ticks: 60 ticks (one per second)
-        val tickRadiusOuter = radius - 2.dp.toPx()
+        // Precompute 60 tick coordinates only when canvas size changes
+        if (cache.lastTickSize != w) {
+          cache.lastTickSize = w
+          val tickRadiusOuter = radius - 2.dp.toPx()
+          val majorLen = 8.dp.toPx()
+          val minorLen = 4.dp.toPx()
+          for (i in 0 until 60) {
+            val angleRad = (i * 6f) * (PI / 180f) - (PI / 2f)
+            val cosA = cos(angleRad).toFloat()
+            val sinA = sin(angleRad).toFloat()
+            val tickLength = if (i % 5 == 0) majorLen else minorLen
+            cache.tickStartX[i] = center.x + (tickRadiusOuter - tickLength) * cosA
+            cache.tickStartY[i] = center.y + (tickRadiusOuter - tickLength) * sinA
+            cache.tickEndX[i] = center.x + tickRadiusOuter * cosA
+            cache.tickEndY[i] = center.y + tickRadiusOuter * sinA
+          }
+        }
+
+        val majorStroke = 2.dp.toPx()
+        val minorStroke = 1.dp.toPx()
+        val minorTickColor = outlineColor.copy(alpha = 0.4f)
         for (i in 0 until 60) {
-          val angleRad = (i * 6f) * (PI / 180f) - (PI / 2f)
           val isMajor = i % 5 == 0
-          val tickLength = if (isMajor) 8.dp.toPx() else 4.dp.toPx()
-          val tickStroke = if (isMajor) 2.dp.toPx() else 1.dp.toPx()
-          val tickColor = if (isMajor) primaryColor else outlineColor.copy(alpha = 0.4f)
-
-          val startX = center.x + ((tickRadiusOuter - tickLength) * cos(angleRad)).toFloat()
-          val startY = center.y + ((tickRadiusOuter - tickLength) * sin(angleRad)).toFloat()
-          val endX = center.x + (tickRadiusOuter * cos(angleRad)).toFloat()
-          val endY = center.y + (tickRadiusOuter * sin(angleRad)).toFloat()
-
           drawLine(
-            color = tickColor,
-            start = Offset(startX, startY),
-            end = Offset(endX, endY),
-            strokeWidth = tickStroke,
+            color = if (isMajor) primaryColor else minorTickColor,
+            start = Offset(cache.tickStartX[i], cache.tickStartY[i]),
+            end = Offset(cache.tickEndX[i], cache.tickEndY[i]),
+            strokeWidth = if (isMajor) majorStroke else minorStroke,
             cap = StrokeCap.Round
           )
         }
@@ -257,20 +330,17 @@ fun StopwatchAnalogDigitalDial(
             style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round)
           )
         }
-        drawArc(
-          brush = Brush.sweepGradient(
-            colors = listOf(
-              primaryColor.copy(alpha = 0.15f),
-              primaryColor
-            )
-          ),
-          startAngle = -90f,
-          sweepAngle = sweepArcAngle,
-          useCenter = false,
-          topLeft = Offset(center.x - radius, center.y - radius),
-          size = Size(radius * 2f, radius * 2f),
-          style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-        )
+        cache.sweepArcBrush?.let { arcBrush ->
+          drawArc(
+            brush = arcBrush,
+            startAngle = -90f,
+            sweepAngle = sweepArcAngle,
+            useCenter = false,
+            topLeft = Offset(center.x - radius, center.y - radius),
+            size = Size(radius * 2f, radius * 2f),
+            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+          )
+        }
 
         // Needle hand with luminous droplet tip
         rotate(degrees = secondsAngle, pivot = center) {
@@ -283,11 +353,13 @@ fun StopwatchAnalogDigitalDial(
             cap = StrokeCap.Round
           )
 
-          drawCircle(
-            color = tertiaryColor.copy(alpha = 0.3f * runningWeight),
-            radius = 7.dp.toPx(),
-            center = Offset(center.x, tipY)
-          )
+          if (runningWeight > 0.01f) {
+            drawCircle(
+              color = tertiaryColor.copy(alpha = 0.3f * runningWeight),
+              radius = 7.dp.toPx(),
+              center = Offset(center.x, tipY)
+            )
+          }
           drawCircle(
             color = tertiaryColor,
             radius = 3.5.dp.toPx(),
@@ -337,6 +409,28 @@ fun StopwatchAnalogDigitalDial(
   }
 }
 
+private class TimerDialCache {
+  val outerBlobPath = Path()
+  val secondaryBlobPath = Path()
+  val liquidCircleClip = Path()
+  val wavePath1 = Path()
+  val wavePath2 = Path()
+  val xBuffer = FloatArray(12)
+  val yBuffer = FloatArray(12)
+
+  var lastOuterSize = -1f
+  var lastInnerSize = -1f
+  var lastColor = Color.Unspecified
+
+  var outerBlobBrush: Brush? = null
+  var waveBrush: Brush? = null
+  var arcSweepBrush: Brush? = null
+  var bgRadialBrush: Brush? = null
+  var lastBgSize = -1f
+  var lastSurfaceVariant = Color.Unspecified
+  var lastSurface = Color.Unspecified
+}
+
 @Composable
 fun CircularProgressTimerArc(
   progress: Float,
@@ -354,20 +448,20 @@ fun CircularProgressTimerArc(
   val tipHighlightColor = MaterialTheme.colorScheme.onPrimary
   val displayTime = TimeFormatter.formatTimer(remainingMillis)
 
-  // Smoothly interpolate progress for liquid arc motion
-  val animatedProgress by animateFloatAsState(
+  // Keep State references and read .value only inside Canvas/graphicsLayer
+  val animatedProgressState = animateFloatAsState(
     targetValue = progress.coerceIn(0f, 1f),
     animationSpec = tween(durationMillis = 320, easing = LinearEasing),
     label = "smooth_timer_progress"
   )
 
-  val animatedColor by animateColorAsState(
+  val animatedColorState = animateColorAsState(
     targetValue = timerColor,
     animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
     label = "smooth_timer_color"
   )
 
-  val runningWeight by animateFloatAsState(
+  val runningWeightState = animateFloatAsState(
     targetValue = if (isRunning) 1f else 0f,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -376,7 +470,7 @@ fun CircularProgressTimerArc(
     label = "timer_running_weight"
   )
 
-  val dialScale by animateFloatAsState(
+  val dialScaleState = animateFloatAsState(
     targetValue = if (isRunning) 1.025f else 1f,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -386,7 +480,7 @@ fun CircularProgressTimerArc(
   )
 
   val infiniteTransition = rememberInfiniteTransition(label = "timer_fluid_anim")
-  val blobPhase by infiniteTransition.animateFloat(
+  val blobPhaseState = infiniteTransition.animateFloat(
     initialValue = 0f,
     targetValue = (2.0 * PI).toFloat(),
     animationSpec = infiniteRepeatable(
@@ -395,7 +489,7 @@ fun CircularProgressTimerArc(
     ),
     label = "timer_blob_phase"
   )
-  val wavePhase by infiniteTransition.animateFloat(
+  val wavePhaseState = infiniteTransition.animateFloat(
     initialValue = 0f,
     targetValue = (2.0 * PI).toFloat(),
     animationSpec = infiniteRepeatable(
@@ -404,7 +498,7 @@ fun CircularProgressTimerArc(
     ),
     label = "timer_wave_phase"
   )
-  val pulseScale by infiniteTransition.animateFloat(
+  val pulseScaleState = infiniteTransition.animateFloat(
     initialValue = 0.96f,
     targetValue = 1.04f,
     animationSpec = infiniteRepeatable(
@@ -414,62 +508,91 @@ fun CircularProgressTimerArc(
     label = "timer_pulse_scale"
   )
 
-  val outerBlobPath = remember { Path() }
-  val secondaryBlobPath = remember { Path() }
-  val liquidCircleClip = remember { Path() }
-  val wavePath1 = remember { Path() }
-  val wavePath2 = remember { Path() }
+  val cache = remember { TimerDialCache() }
 
   Box(
     modifier = modifier
       .size(size)
       .graphicsLayer {
-        scaleX = dialScale
-        scaleY = dialScale
+        val s = dialScaleState.value
+        scaleX = s
+        scaleY = s
       },
     contentAlignment = Alignment.Center
   ) {
-    // 1. Organic Morphing Outer Blob Aura
+    // 1. Organic Morphing Outer Blob Aura (cached radial shader, zero per-frame allocations)
     Canvas(modifier = Modifier.fillMaxSize()) {
-      val center = Offset(this.size.width / 2f, this.size.height / 2f)
+      val w = this.size.width
+      val h = this.size.height
+      val centerX = w / 2f
+      val centerY = h / 2f
       val baseRadius = this.size.minDimension / 2f
-      val breath = if (isRunning) pulseScale else 1f
+
+      val runningWeight = runningWeightState.value
+      val animatedColor = animatedColorState.value
+      val blobPhase = blobPhaseState.value
+      val breath = if (isRunning) pulseScaleState.value else 1f
+
+      if (cache.outerBlobBrush == null || cache.lastOuterSize != baseRadius || cache.lastColor != animatedColor) {
+        cache.lastOuterSize = baseRadius
+        cache.lastColor = animatedColor
+        cache.outerBlobBrush = Brush.radialGradient(
+          colors = listOf(
+            animatedColor.copy(alpha = 0.36f),
+            animatedColor.copy(alpha = 0.12f),
+            Color.Transparent
+          ),
+          center = Offset.Zero,
+          radius = (baseRadius * 1.18f).coerceAtLeast(1f)
+        )
+        cache.waveBrush = Brush.verticalGradient(
+          colors = listOf(
+            animatedColor.copy(alpha = 0.24f),
+            animatedColor.copy(alpha = 0.05f)
+          )
+        )
+        cache.arcSweepBrush = Brush.sweepGradient(
+          colors = listOf(
+            animatedColor.copy(alpha = 0.55f),
+            animatedColor
+          )
+        )
+      }
 
       createOrganicBlobPath(
-        center = center,
+        center = Offset.Zero,
         baseRadius = baseRadius * 0.95f * breath,
         phase = blobPhase,
         pointCount = 10,
         wobbleAmplitude = 0.055f + 0.035f * runningWeight,
         harmonicA = 2,
         harmonicB = 3,
-        path = outerBlobPath
+        path = cache.outerBlobPath,
+        xBuffer = cache.xBuffer,
+        yBuffer = cache.yBuffer
       )
-      drawPath(
-        path = outerBlobPath,
-        brush = Brush.radialGradient(
-          colors = listOf(
-            animatedColor.copy(alpha = 0.20f + 0.16f * runningWeight),
-            animatedColor.copy(alpha = 0.06f + 0.06f * runningWeight),
-            Color.Transparent
-          ),
-          center = center,
-          radius = baseRadius * 1.18f
+      translate(left = centerX, top = centerY) {
+        drawPath(
+          path = cache.outerBlobPath,
+          brush = cache.outerBlobBrush!!,
+          alpha = (0.55f + 0.45f * runningWeight).coerceIn(0f, 1f)
         )
-      )
+      }
 
       createOrganicBlobPath(
-        center = center,
+        center = Offset(centerX, centerY),
         baseRadius = baseRadius * 0.91f,
         phase = -blobPhase * 1.25f + 1.1f,
         pointCount = 12,
         wobbleAmplitude = 0.045f + 0.03f * runningWeight,
         harmonicA = 3,
         harmonicB = 4,
-        path = secondaryBlobPath
+        path = cache.secondaryBlobPath,
+        xBuffer = cache.xBuffer,
+        yBuffer = cache.yBuffer
       )
       drawPath(
-        path = secondaryBlobPath,
+        path = cache.secondaryBlobPath,
         color = animatedColor.copy(alpha = 0.10f + 0.12f * runningWeight),
         style = Stroke(width = 1.5.dp.toPx())
       )
@@ -481,126 +604,148 @@ fun CircularProgressTimerArc(
         .fillMaxSize()
         .padding(10.dp)
         .clip(CircleShape)
-        .background(
-          Brush.radialGradient(
-            colors = listOf(
-              surfaceVariant.copy(alpha = 0.55f),
-              surfaceColor.copy(alpha = 0.96f)
-            )
-          )
-        )
         .border(1.dp, outlineColor.copy(alpha = 0.32f), CircleShape),
       contentAlignment = Alignment.Center
     ) {
-      Canvas(modifier = Modifier.fillMaxSize().padding(10.dp)) {
-        val center = Offset(this.size.width / 2f, this.size.height / 2f)
-        val radius = (this.size.width / 2f) - 6.dp.toPx()
+      Canvas(modifier = Modifier.fillMaxSize()) {
+        val fullW = this.size.width
+        val fullH = this.size.height
+        val fullCenter = Offset(fullW / 2f, fullH / 2f)
 
-        // Inner circular clip for liquid fill
-        val innerRadius = (radius - 7.dp.toPx()).coerceAtLeast(1f)
-        liquidCircleClip.reset()
-        liquidCircleClip.addOval(
-          androidx.compose.ui.geometry.Rect(
-            left = center.x - innerRadius,
-            top = center.y - innerRadius,
-            right = center.x + innerRadius,
-            bottom = center.y + innerRadius
-          )
-        )
-
-        // Subtle animated liquid level inside the dial
-        clipPath(liquidCircleClip) {
-          val w = this.size.width
-          val h = this.size.height
-          val waveAmp = (4.dp.toPx() + 3.dp.toPx() * runningWeight)
-
-          createLiquidWavePath(
-            width = w,
-            height = h,
-            fillFraction = animatedProgress,
-            wavePhase = wavePhase,
-            waveAmplitude = waveAmp,
-            path = wavePath1
-          )
-          drawPath(
-            path = wavePath1,
-            brush = Brush.verticalGradient(
-              colors = listOf(
-                animatedColor.copy(alpha = 0.16f + 0.08f * runningWeight),
-                animatedColor.copy(alpha = 0.04f)
-              )
-            )
-          )
-
-          createLiquidWavePath(
-            width = w,
-            height = h,
-            fillFraction = (animatedProgress - 0.02f).coerceAtLeast(0f),
-            wavePhase = -wavePhase * 1.3f + 1.5f,
-            waveAmplitude = waveAmp * 0.8f,
-            path = wavePath2
-          )
-          drawPath(
-            path = wavePath2,
-            color = animatedColor.copy(alpha = 0.09f + 0.05f * runningWeight)
-          )
-        }
-
-        // Background track
-        drawCircle(
-          color = outlineColor.copy(alpha = 0.2f),
-          radius = radius,
-          center = center,
-          style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round)
-        )
-
-        // Outer soft glow arc
-        val sweepAngle = animatedProgress * 360f
-        if (sweepAngle > 0.5f) {
-          drawArc(
-            color = animatedColor.copy(alpha = 0.22f + 0.12f * runningWeight),
-            startAngle = -90f,
-            sweepAngle = sweepAngle,
-            useCenter = false,
-            topLeft = Offset(center.x - radius, center.y - radius),
-            size = Size(radius * 2f, radius * 2f),
-            style = Stroke(width = 14.dp.toPx(), cap = StrokeCap.Round)
-          )
-        }
-
-        // Active progress arc
-        drawArc(
-          brush = Brush.sweepGradient(
+        if (cache.bgRadialBrush == null ||
+          cache.lastBgSize != fullW ||
+          cache.lastSurfaceVariant != surfaceVariant ||
+          cache.lastSurface != surfaceColor
+        ) {
+          cache.lastBgSize = fullW
+          cache.lastSurfaceVariant = surfaceVariant
+          cache.lastSurface = surfaceColor
+          cache.bgRadialBrush = Brush.radialGradient(
             colors = listOf(
-              animatedColor.copy(alpha = 0.55f),
-              animatedColor
+              surfaceVariant.copy(alpha = 0.55f),
+              surfaceColor.copy(alpha = 0.96f)
+            ),
+            center = fullCenter,
+            radius = (fullW * 0.5f).coerceAtLeast(1f)
+          )
+        }
+        drawCircle(brush = cache.bgRadialBrush!!)
+
+        val innerPadding = 10.dp.toPx()
+        val w = (fullW - innerPadding * 2f).coerceAtLeast(1f)
+        val h = (fullH - innerPadding * 2f).coerceAtLeast(1f)
+        val center = Offset(w / 2f, h / 2f)
+        val radius = (w / 2f) - 6.dp.toPx()
+
+        val animatedProgress = animatedProgressState.value
+        val animatedColor = animatedColorState.value
+        val runningWeight = runningWeightState.value
+        val wavePhase = wavePhaseState.value
+        val pulseScale = pulseScaleState.value
+
+        // Rebuild inner clip path only when size changes
+        if (cache.lastInnerSize != w) {
+          cache.lastInnerSize = w
+          val innerRadius = (radius - 7.dp.toPx()).coerceAtLeast(1f)
+          cache.liquidCircleClip.reset()
+          cache.liquidCircleClip.addOval(
+            Rect(
+              left = center.x - innerRadius,
+              top = center.y - innerRadius,
+              right = center.x + innerRadius,
+              bottom = center.y + innerRadius
             )
-          ),
-          startAngle = -90f,
-          sweepAngle = sweepAngle,
-          useCenter = false,
-          topLeft = Offset(center.x - radius, center.y - radius),
-          size = Size(radius * 2f, radius * 2f),
-          style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round)
-        )
-
-        // Luminous fluid droplet at tip of progress arc
-        if (sweepAngle > 1f) {
-          val tipAngleRad = ((-90f + sweepAngle) * PI / 180.0)
-          val tipX = center.x + (radius * cos(tipAngleRad)).toFloat()
-          val tipY = center.y + (radius * sin(tipAngleRad)).toFloat()
-          val tipCenter = Offset(tipX, tipY)
-
-          drawCircle(
-            color = animatedColor.copy(alpha = 0.35f),
-            radius = 9.dp.toPx() * (if (isRunning) pulseScale else 1f),
-            center = tipCenter
           )
+        }
+
+        translate(left = innerPadding, top = innerPadding) {
+          // Subtle animated liquid level inside the dial
+          clipPath(cache.liquidCircleClip) {
+            val waveAmp = 4.dp.toPx() + 3.dp.toPx() * runningWeight
+
+            createLiquidWavePath(
+              width = w,
+              height = h,
+              fillFraction = animatedProgress,
+              wavePhase = wavePhase,
+              waveAmplitude = waveAmp,
+              path = cache.wavePath1
+            )
+            cache.waveBrush?.let { wb ->
+              drawPath(
+                path = cache.wavePath1,
+                brush = wb,
+                alpha = (0.68f + 0.32f * runningWeight).coerceIn(0f, 1f)
+              )
+            }
+
+            createLiquidWavePath(
+              width = w,
+              height = h,
+              fillFraction = (animatedProgress - 0.02f).coerceAtLeast(0f),
+              wavePhase = -wavePhase * 1.3f + 1.5f,
+              waveAmplitude = waveAmp * 0.8f,
+              path = cache.wavePath2
+            )
+            drawPath(
+              path = cache.wavePath2,
+              color = animatedColor.copy(alpha = 0.09f + 0.05f * runningWeight)
+            )
+          }
+
+          // Background track
           drawCircle(
-            color = tipHighlightColor.copy(alpha = 0.9f),
-            radius = 3.5.dp.toPx(),
-            center = tipCenter
+            color = outlineColor.copy(alpha = 0.2f),
+            radius = radius,
+            center = center,
+            style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round)
           )
+
+          // Outer soft glow arc
+          val sweepAngle = animatedProgress * 360f
+          if (sweepAngle > 0.5f) {
+            drawArc(
+              color = animatedColor.copy(alpha = 0.22f + 0.12f * runningWeight),
+              startAngle = -90f,
+              sweepAngle = sweepAngle,
+              useCenter = false,
+              topLeft = Offset(center.x - radius, center.y - radius),
+              size = Size(radius * 2f, radius * 2f),
+              style = Stroke(width = 14.dp.toPx(), cap = StrokeCap.Round)
+            )
+          }
+
+          // Active progress arc
+          cache.arcSweepBrush?.let { arcBrush ->
+            drawArc(
+              brush = arcBrush,
+              startAngle = -90f,
+              sweepAngle = sweepAngle,
+              useCenter = false,
+              topLeft = Offset(center.x - radius, center.y - radius),
+              size = Size(radius * 2f, radius * 2f),
+              style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round)
+            )
+          }
+
+          // Luminous fluid droplet at tip of progress arc
+          if (sweepAngle > 1f) {
+            val tipAngleRad = ((-90f + sweepAngle) * PI / 180.0)
+            val tipX = center.x + (radius * cos(tipAngleRad)).toFloat()
+            val tipY = center.y + (radius * sin(tipAngleRad)).toFloat()
+            val tipCenter = Offset(tipX, tipY)
+
+            drawCircle(
+              color = animatedColor.copy(alpha = 0.35f),
+              radius = 9.dp.toPx() * (if (isRunning) pulseScale else 1f),
+              center = tipCenter
+            )
+            drawCircle(
+              color = tipHighlightColor.copy(alpha = 0.9f),
+              radius = 3.5.dp.toPx(),
+              center = tipCenter
+            )
+          }
         }
       }
 
@@ -625,8 +770,9 @@ fun CircularProgressTimerArc(
               modifier = Modifier
                 .size(7.dp)
                 .graphicsLayer {
-                  scaleX = pulseScale
-                  scaleY = pulseScale
+                  val p = pulseScaleState.value
+                  scaleX = p
+                  scaleY = p
                 }
                 .clip(CircleShape)
                 .background(activeLabelColor)
@@ -674,7 +820,6 @@ fun NumberStepper(
     )
     Spacer(modifier = Modifier.height(4.dp))
 
-    // Plus button with bouncy spring press
     Box(
       modifier = Modifier
         .size(34.dp)
@@ -711,7 +856,6 @@ fun NumberStepper(
 
     Spacer(modifier = Modifier.height(4.dp))
 
-    // Minus button with bouncy spring press
     Box(
       modifier = Modifier
         .size(34.dp)
@@ -735,4 +879,3 @@ fun NumberStepper(
     }
   }
 }
-

@@ -8,14 +8,15 @@ import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Random
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.math.sqrt
 
 enum class NoiseProfile(
   val displayName: String,
@@ -46,13 +47,17 @@ enum class NoiseProfile(
 
 /**
  * Real-time audio synthesizer for speech-masking white noise using native AudioTrack.
- * Features biquad digital filtering calibrated to human voice formant frequency bands.
+ * AudioTrack lifecycle (init/play/stop/release) is kept strictly off the UI thread,
+ * and biquad digital filter coefficients are pre-computed per profile.
  */
 class VoiceMaskingNoiseGenerator {
 
   private var audioTrack: AudioTrack? = null
   private var streamJob: Job? = null
-  private val scope = CoroutineScope(Dispatchers.Default)
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+  @OptIn(ExperimentalCoroutinesApi::class)
+  private val releaseScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
   private val random = Random()
 
   @Volatile
@@ -100,6 +105,25 @@ class VoiceMaskingNoiseGenerator {
   private var lastBrownSample = 0f
 
   private val trackLock = Any()
+
+  private data class FilterCoeffs(val a0: Float, val a1: Float, val a2: Float, val b1: Float, val b2: Float)
+  private data class VoiceFilterBank(
+    val hp: FilterCoeffs,
+    val lp: FilterCoeffs,
+    val bp: FilterCoeffs
+  )
+
+  private val voiceMaskingCoeffs = VoiceFilterBank(
+    hp = calculateHighPassCoeffs(250f, sampleRate.toFloat()),
+    lp = calculateLowPassCoeffs(3500f, sampleRate.toFloat()),
+    bp = calculateBandPassCoeffs(1600f, 1.2f, sampleRate.toFloat())
+  )
+
+  private val deepVoiceMaskingCoeffs = VoiceFilterBank(
+    hp = calculateHighPassCoeffs(150f, sampleRate.toFloat()),
+    lp = calculateLowPassCoeffs(2600f, sampleRate.toFloat()),
+    bp = calculateBandPassCoeffs(900f, 1.2f, sampleRate.toFloat())
+  )
 
   private fun safeStopAndRelease(track: AudioTrack?) {
     if (track == null) return
@@ -198,7 +222,6 @@ class VoiceMaskingNoiseGenerator {
         currentVolume = 0.05f
 
         while (isActive && isPlaying) {
-          // Ramp volume towards target
           if (currentVolume < targetVolume) {
             currentVolume = (currentVolume + 0.05f).coerceAtMost(targetVolume)
           } else if (currentVolume > targetVolume) {
@@ -223,6 +246,9 @@ class VoiceMaskingNoiseGenerator {
     streamJob = launchedJob
   }
 
+  /**
+   * Stops playback immediately and releases AudioTrack resources asynchronously off the UI thread.
+   */
   fun stop() {
     if (!isPlaying && audioTrack == null) return
     isPlaying = false
@@ -234,7 +260,11 @@ class VoiceMaskingNoiseGenerator {
       audioTrack = null
       t
     }
-    safeStopAndRelease(trackToStop)
+    if (trackToStop != null) {
+      releaseScope.launch {
+        safeStopAndRelease(trackToStop)
+      }
+    }
   }
 
   fun updateVolume(newVolume: Float) {
@@ -256,17 +286,10 @@ class VoiceMaskingNoiseGenerator {
     lastBrownSample = 0f
   }
 
-  /**
-   * Generates a chunk of filtered noise samples.
-   * For VOICE_MASKING, noise is shaped specifically to human speech formants:
-   * - 2nd order Butterworth high-pass at 250 Hz
-   * - 2nd order Butterworth low-pass at 3500 Hz
-   * - Speech formant band-pass boost centered at 1500 Hz (Q=1.2)
-   */
   private fun generateNoiseChunk(buffer: ShortArray, profile: NoiseProfile, volume: Float) {
     when (profile) {
-      NoiseProfile.VOICE_MASKING -> generateVoiceMasking(buffer, volume, cutoffHp = 250f, cutoffLp = 3500f, centerBp = 1600f)
-      NoiseProfile.DEEP_VOICE_MASKING -> generateVoiceMasking(buffer, volume, cutoffHp = 150f, cutoffLp = 2600f, centerBp = 900f)
+      NoiseProfile.VOICE_MASKING -> generateVoiceMasking(buffer, volume, voiceMaskingCoeffs)
+      NoiseProfile.DEEP_VOICE_MASKING -> generateVoiceMasking(buffer, volume, deepVoiceMaskingCoeffs)
       NoiseProfile.PINK_NOISE -> generatePinkNoise(buffer, volume)
       NoiseProfile.BROWN_NOISE -> generateBrownNoise(buffer, volume)
     }
@@ -275,37 +298,31 @@ class VoiceMaskingNoiseGenerator {
   private fun generateVoiceMasking(
     buffer: ShortArray,
     volume: Float,
-    cutoffHp: Float,
-    cutoffLp: Float,
-    centerBp: Float
+    bank: VoiceFilterBank
   ) {
-    // Coefficients for High-Pass (Butterworth 2nd order)
-    val (hpA0, hpA1, hpA2, hpB1, hpB2) = calculateHighPassCoeffs(cutoffHp, sampleRate.toFloat())
-    // Coefficients for Low-Pass (Butterworth 2nd order)
-    val (lpA0, lpA1, lpA2, lpB1, lpB2) = calculateLowPassCoeffs(cutoffLp, sampleRate.toFloat())
-    // Coefficients for Formant Band-Pass (Center boost)
-    val (bpA0, bpA1, bpA2, bpB1, bpB2) = calculateBandPassCoeffs(centerBp, 1.2f, sampleRate.toFloat())
+    val hp = bank.hp
+    val lp = bank.lp
+    val bp = bank.bp
+
+    val hpA0 = hp.a0; val hpA1 = hp.a1; val hpA2 = hp.a2; val hpB1 = hp.b1; val hpB2 = hp.b2
+    val lpA0 = lp.a0; val lpA1 = lp.a1; val lpA2 = lp.a2; val lpB1 = lp.b1; val lpB2 = lp.b2
+    val bpA0 = bp.a0; val bpA1 = bp.a1; val bpA2 = bp.a2; val bpB1 = bp.b1; val bpB2 = bp.b2
 
     for (i in buffer.indices) {
-      // White noise raw generator: Gaussian approx via sum of uniforms
       val white = ((random.nextFloat() * 2f - 1f) + (random.nextFloat() * 2f - 1f)) * 0.5f
 
-      // Stage 1: High-pass (cut subsonic rumble below human voice)
       val hpOut = hpA0 * white + hpA1 * hpX1 + hpA2 * hpX2 - hpB1 * hpY1 - hpB2 * hpY2
       hpX2 = hpX1; hpX1 = white
       hpY2 = hpY1; hpY1 = hpOut
 
-      // Stage 2: Low-pass (cut harsh hiss above speech intelligibility)
       val lpOut = lpA0 * hpOut + lpA1 * lpX1 + lpA2 * lpX2 - lpB1 * lpY1 - lpB2 * lpY2
       lpX2 = lpX1; lpX1 = hpOut
       lpY2 = lpY1; lpY1 = lpOut
 
-      // Stage 3: Speech formant emphasis (boost voice masking energy at formant frequencies)
       val bpOut = bpA0 * lpOut + bpA1 * bpX1 + bpA2 * bpX2 - bpB1 * bpY1 - bpB2 * bpY2
       bpX2 = bpX1; bpX1 = lpOut
       bpY2 = bpY1; bpY1 = bpOut
 
-      // Blend low-pass shaped noise with formant emphasis for maximum speech drowning power
       val blended = (lpOut * 0.65f + bpOut * 0.95f) * volume * 2.2f
       val clamped = blended.coerceIn(-1f, 1f)
       buffer[i] = (clamped * 32767f).toInt().toShort()
@@ -336,8 +353,6 @@ class VoiceMaskingNoiseGenerator {
       buffer[i] = (clamped * 32767f).toInt().toShort()
     }
   }
-
-  private data class FilterCoeffs(val a0: Float, val a1: Float, val a2: Float, val b1: Float, val b2: Float)
 
   private fun calculateHighPassCoeffs(cutoffHz: Float, fs: Float): FilterCoeffs {
     val omega = 2f * PI.toFloat() * cutoffHz / fs

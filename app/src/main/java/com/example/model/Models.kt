@@ -1,21 +1,25 @@
 package com.example.model
 
+import androidx.compose.runtime.Immutable
 import com.example.util.NoiseProfile
 import java.util.Locale
 import java.util.UUID
 
+@Immutable
 data class LapItem(
   val lapNumber: Int,
   val lapTimeMillis: Long,
   val overallTimeMillis: Long
 )
 
+@Immutable
 data class StopwatchStats(
   val bestLapIndex: Int? = null,
   val worstLapIndex: Int? = null,
   val averageLapMillis: Long = 0L
 )
 
+@Immutable
 data class TimerItem(
   val id: String,
   val title: String,
@@ -41,6 +45,7 @@ enum class IntervalPhase {
   FINISHED
 }
 
+@Immutable
 data class IntervalStep(
   val id: String = UUID.randomUUID().toString(),
   val name: String,
@@ -49,6 +54,7 @@ data class IntervalStep(
   val colorHex: Long = 0xFF00E676
 )
 
+@Immutable
 data class IntervalConfig(
   val id: String = "custom",
   val name: String = "Tabata Standard",
@@ -71,6 +77,7 @@ data class IntervalConfig(
     }
 }
 
+@Immutable
 data class TimerPreset(
   val id: String,
   val title: String,

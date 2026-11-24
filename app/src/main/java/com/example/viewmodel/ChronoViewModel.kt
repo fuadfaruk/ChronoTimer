@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.os.SystemClock
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.PresetDefaults
@@ -17,11 +18,17 @@ import com.example.ui.theme.AppThemeMode
 import com.example.util.NoiseProfile
 import com.example.util.SoundHapticHelper
 import com.example.util.VoiceMaskingNoiseGenerator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -34,6 +41,7 @@ enum class AppTab {
   PRESETS
 }
 
+@Immutable
 data class StopwatchUiState(
   val elapsedMillis: Long = 0L,
   val isRunning: Boolean = false,
@@ -41,6 +49,15 @@ data class StopwatchUiState(
   val stats: StopwatchStats = StopwatchStats()
 )
 
+@Immutable
+data class StopwatchControlsState(
+  val isRunning: Boolean = false,
+  val hasElapsed: Boolean = false,
+  val laps: List<LapItem> = emptyList(),
+  val stats: StopwatchStats = StopwatchStats()
+)
+
+@Immutable
 data class IntervalUiState(
   val config: IntervalConfig = PresetDefaults.defaultIntervalConfigs.first(),
   val phase: IntervalPhase = IntervalPhase.READY,
@@ -54,6 +71,7 @@ data class IntervalUiState(
     get() = config.steps.getOrNull(currentStepIndex)
 }
 
+@Immutable
 data class TimerUiState(
   val timers: List<TimerItem> = listOf(
     TimerItem(
@@ -69,6 +87,7 @@ data class TimerUiState(
   val ringingTimerId: String? = null
 )
 
+@Immutable
 data class SettingsState(
   val soundEnabled: Boolean = true,
   val vibrationEnabled: Boolean = true,
@@ -83,6 +102,25 @@ data class SettingsState(
   val quickAddSeconds: Int = 300
 )
 
+/**
+ * Discrete, low-frequency state for the root Activity shell so 16ms/100ms timer ticks
+ * never trigger recomposition of the top bar, bottom bar, or ambient backdrop.
+ */
+@Immutable
+data class RootShellUiState(
+  val currentTab: AppTab = AppTab.TIMER,
+  val isAnyActive: Boolean = false,
+  val anyTimerRunning: Boolean = false,
+  val isTimerFullScreen: Boolean = false,
+  val keepScreenOn: Boolean = true,
+  val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+  val dynamicColorEnabled: Boolean = true,
+  val activeTimerColorHex: Long? = 0xFF00E5FF,
+  val intervalPhase: IntervalPhase = IntervalPhase.READY,
+  val intervalIsMultiStep: Boolean = false,
+  val intervalStepColorHex: Long? = null
+)
+
 class ChronoViewModel(application: Application) : AndroidViewModel(application) {
 
   private val repository = PresetRepository(application)
@@ -90,6 +128,12 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   val noiseGenerator = VoiceMaskingNoiseGenerator()
   private var isPreviewActive = false
   private var previewProfile: NoiseProfile? = null
+
+  @Volatile
+  private var customPresetsModified = false
+
+  @Volatile
+  private var customIntervalPresetsModified = false
 
   private val _currentTab = MutableStateFlow(AppTab.TIMER)
   val currentTab: StateFlow<AppTab> = _currentTab.asStateFlow()
@@ -100,6 +144,18 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   private var stopwatchJob: Job? = null
   private var stopwatchStartTime: Long = 0L
   private var stopwatchAccumulatedTime: Long = 0L
+
+  val stopwatchControlsState: StateFlow<StopwatchControlsState> = _stopwatchState
+    .map { s ->
+      StopwatchControlsState(
+        isRunning = s.isRunning,
+        hasElapsed = s.elapsedMillis > 0L,
+        laps = s.laps,
+        stats = s.stats
+      )
+    }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), StopwatchControlsState())
 
   // Timer state
   private val _timerState = MutableStateFlow(TimerUiState())
@@ -150,13 +206,59 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   )
   val settings: StateFlow<SettingsState> = _settings.asStateFlow()
 
+  val rootShellState: StateFlow<RootShellUiState> = combine(
+    _currentTab,
+    _stopwatchState,
+    _timerState,
+    _intervalState,
+    _settings
+  ) { tab, stopwatch, timer, interval, currentSettings ->
+    val activeTimer = timer.timers.find { it.id == timer.selectedTimerId }
+      ?: timer.timers.firstOrNull()
+    val anyTimerRunning = timer.timers.any { it.isRunning }
+    val isAnyActive = stopwatch.isRunning || anyTimerRunning || interval.isRunning
+    val isTimerFullScreen = tab == AppTab.TIMER && activeTimer?.hasStarted == true
+
+    RootShellUiState(
+      currentTab = tab,
+      isAnyActive = isAnyActive,
+      anyTimerRunning = anyTimerRunning,
+      isTimerFullScreen = isTimerFullScreen,
+      keepScreenOn = currentSettings.keepScreenOn,
+      themeMode = currentSettings.themeMode,
+      dynamicColorEnabled = currentSettings.dynamicColorEnabled,
+      activeTimerColorHex = activeTimer?.colorHex,
+      intervalPhase = interval.phase,
+      intervalIsMultiStep = interval.config.isMultiStep,
+      intervalStepColorHex = interval.currentStep?.colorHex
+    )
+  }
+    .distinctUntilChanged()
+    .stateIn(
+      scope = viewModelScope,
+      started = SharingStarted.Eagerly,
+      initialValue = RootShellUiState(
+        keepScreenOn = _settings.value.keepScreenOn,
+        themeMode = _settings.value.themeMode,
+        dynamicColorEnabled = _settings.value.dynamicColorEnabled
+      )
+    )
+
   init {
-    _customPresets.value = repository.loadCustomPresets()
-    _customIntervalPresets.value = repository.loadCustomIntervalPresets()
-    startTimerTicker()
+    viewModelScope.launch(Dispatchers.IO) {
+      val loadedPresets = repository.loadCustomPresets()
+      if (!customPresetsModified) {
+        _customPresets.value = loadedPresets
+      }
+      val loadedIntervals = repository.loadCustomIntervalPresets()
+      if (!customIntervalPresetsModified) {
+        _customIntervalPresets.value = loadedIntervals
+      }
+    }
   }
 
   fun setTab(tab: AppTab) {
+    if (_currentTab.value == tab) return
     _currentTab.value = tab
     soundHapticHelper.vibrateClick(_settings.value.vibrationEnabled)
   }
@@ -178,7 +280,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
         val now = SystemClock.elapsedRealtime()
         val total = stopwatchAccumulatedTime + (now - stopwatchStartTime)
         _stopwatchState.update { it.copy(elapsedMillis = total) }
-        delay(16) // ~60fps smooth visual update
+        delay(16)
       }
     }
   }
@@ -225,7 +327,6 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
 
     val updatedLaps = listOf(newLap) + current.laps
 
-    // Recalculate best and worst laps (if >= 2 laps)
     var bestIdx: Int? = null
     var worstIdx: Int? = null
     var totalTime = 0L
@@ -261,25 +362,33 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   }
 
   // -------------------------------------------------------------
-  // TIMER CONTROLS
+  // TIMER CONTROLS (Idle-Gated Ticker)
   // -------------------------------------------------------------
-  private fun startTimerTicker() {
-    timerTickerJob?.cancel()
+  private fun ensureTimerTickerRunning() {
+    if (timerTickerJob?.isActive == true) return
     timerTickerJob = viewModelScope.launch {
       var lastTick = SystemClock.elapsedRealtime()
       while (isActive) {
         delay(100)
+        val currentState = _timerState.value
+        if (currentState.timers.none { it.isRunning }) {
+          break
+        }
+
         val now = SystemClock.elapsedRealtime()
         val delta = now - lastTick
         lastTick = now
 
-        var ringingId: String? = _timerState.value.ringingTimerId
+        var alarmTriggered = false
+        var anyStillRunning = false
+        var ringingId: String? = currentState.ringingTimerId
 
-        val updated = _timerState.value.timers.map { timer ->
+        val updated = currentState.timers.map { timer ->
           if (timer.isRunning) {
             val newRemaining = (timer.remainingMillis - delta).coerceAtLeast(0L)
             if (newRemaining == 0L && !timer.isFinished) {
               ringingId = timer.id
+              alarmTriggered = true
               soundHapticHelper.startAlarmAlert(
                 _settings.value.soundEnabled,
                 _settings.value.vibrationEnabled
@@ -291,6 +400,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
                 hasStarted = false
               )
             } else {
+              anyStillRunning = true
               timer.copy(remainingMillis = newRemaining)
             }
           } else {
@@ -299,8 +409,14 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         _timerState.update { it.copy(timers = updated, ringingTimerId = ringingId) }
-        syncWhiteNoise()
+        if (alarmTriggered) {
+          syncWhiteNoise()
+        }
+        if (!anyStillRunning) {
+          break
+        }
       }
+      timerTickerJob = null
     }
   }
 
@@ -323,6 +439,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       }
       state.copy(timers = updated)
     }
+    ensureTimerTickerRunning()
     syncWhiteNoise()
   }
 
@@ -421,6 +538,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       }
       state.copy(timers = updated)
     }
+    syncWhiteNoise()
   }
 
   fun deleteTimer(timerId: String) {
@@ -468,6 +586,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     _currentTab.value = AppTab.TIMER
     if (startImmediately) {
       soundHapticHelper.playClickSound(_settings.value.soundEnabled)
+      ensureTimerTickerRunning()
       syncWhiteNoise()
     }
   }
@@ -768,6 +887,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   }
 
   fun saveCustomIntervalPreset(preset: IntervalConfig) {
+    customIntervalPresetsModified = true
     val normalized = preset.copy(
       id = preset.id.ifBlank { UUID.randomUUID().toString() },
       name = preset.name.trim().ifBlank { "Custom Interval" },
@@ -781,15 +901,20 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       listOf(normalized) + existing
     }
     _customIntervalPresets.value = updated
-    repository.saveCustomIntervalPresets(updated)
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.saveCustomIntervalPresets(updated)
+    }
     selectIntervalConfig(normalized)
     soundHapticHelper.playClickSound(_settings.value.soundEnabled)
   }
 
   fun deleteCustomIntervalPreset(presetId: String) {
+    customIntervalPresetsModified = true
     val updated = _customIntervalPresets.value.filter { it.id != presetId }
     _customIntervalPresets.value = updated
-    repository.saveCustomIntervalPresets(updated)
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.saveCustomIntervalPresets(updated)
+    }
     if (_intervalState.value.config.id == presetId) {
       selectIntervalConfig(PresetDefaults.defaultIntervalConfigs.first())
     }
@@ -800,6 +925,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   // PRESET MANAGEMENT
   // -------------------------------------------------------------
   fun addCustomPreset(title: String, durationSeconds: Long, category: String, colorHex: Long) {
+    customPresetsModified = true
     val newPreset = TimerPreset(
       id = UUID.randomUUID().toString(),
       title = title.ifBlank { "Custom Timer" },
@@ -810,14 +936,19 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     )
     val updated = _customPresets.value + newPreset
     _customPresets.value = updated
-    repository.saveCustomPresets(updated)
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.saveCustomPresets(updated)
+    }
     soundHapticHelper.playClickSound(_settings.value.soundEnabled)
   }
 
   fun deleteCustomPreset(presetId: String) {
+    customPresetsModified = true
     val updated = _customPresets.value.filter { it.id != presetId }
     _customPresets.value = updated
-    repository.saveCustomPresets(updated)
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.saveCustomPresets(updated)
+    }
   }
 
   // -------------------------------------------------------------
@@ -904,12 +1035,18 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
           noiseGenerator.updateProfile(targetProfile)
         }
       }
-      _settings.update { it.copy(isWhiteNoisePlaying = true, previewingProfile = activePreview) }
+      val currentSettings = _settings.value
+      if (!currentSettings.isWhiteNoisePlaying || currentSettings.previewingProfile != activePreview) {
+        _settings.update { it.copy(isWhiteNoisePlaying = true, previewingProfile = activePreview) }
+      }
     } else {
       if (noiseGenerator.isPlaying) {
         noiseGenerator.stop()
       }
-      _settings.update { it.copy(isWhiteNoisePlaying = false, previewingProfile = null) }
+      val currentSettings = _settings.value
+      if (currentSettings.isWhiteNoisePlaying || currentSettings.previewingProfile != null) {
+        _settings.update { it.copy(isWhiteNoisePlaying = false, previewingProfile = null) }
+      }
     }
   }
 

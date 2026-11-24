@@ -68,7 +68,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -82,8 +82,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.TimeFormatter
 import com.example.ui.components.AnimatedAudioWaves
 import com.example.ui.components.CircularProgressTimerArc
@@ -95,6 +97,27 @@ import com.example.ui.components.fluidPulseHalo
 import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.ui.theme.resolveThemeAccentColor
 import com.example.viewmodel.ChronoViewModel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+@Immutable
+private data class TimerScreenMeta(
+  val timerId: String,
+  val title: String,
+  val initialDurationMillis: Long,
+  val isRunning: Boolean,
+  val hasStarted: Boolean,
+  val colorHex: Long,
+  val hasMultipleTimers: Boolean,
+  val ringingTimerId: String?
+)
+
+@Immutable
+private data class TimerSettingsMeta(
+  val whiteNoiseEnabled: Boolean,
+  val isWhiteNoisePlaying: Boolean,
+  val quickAddSeconds: Int
+)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -102,39 +125,90 @@ fun TimerScreen(
   viewModel: ChronoViewModel,
   modifier: Modifier = Modifier
 ) {
-  val timerState by viewModel.timerState.collectAsState()
-  val settings by viewModel.settings.collectAsState()
-  val activeTimer = timerState.timers.find { it.id == timerState.selectedTimerId }
-    ?: timerState.timers.firstOrNull()
+  val metaFlow = remember(viewModel) {
+    viewModel.timerState
+      .map { state ->
+        val active = state.timers.find { it.id == state.selectedTimerId }
+          ?: state.timers.firstOrNull()
+        active?.let {
+          TimerScreenMeta(
+            timerId = it.id,
+            title = it.title,
+            initialDurationMillis = it.initialDurationMillis,
+            isRunning = it.isRunning,
+            hasStarted = it.hasStarted,
+            colorHex = it.colorHex,
+            hasMultipleTimers = state.timers.size > 1,
+            ringingTimerId = state.ringingTimerId
+          )
+        }
+      }
+      .distinctUntilChanged()
+  }
+  val settingsMetaFlow = remember(viewModel) {
+    viewModel.settings
+      .map { s ->
+        TimerSettingsMeta(
+          whiteNoiseEnabled = s.whiteNoiseEnabled,
+          isWhiteNoisePlaying = s.isWhiteNoisePlaying,
+          quickAddSeconds = s.quickAddSeconds
+        )
+      }
+      .distinctUntilChanged()
+  }
+
+  val initialActive = remember {
+    val state = viewModel.timerState.value
+    val active = state.timers.find { it.id == state.selectedTimerId } ?: state.timers.firstOrNull()
+    active?.let {
+      TimerScreenMeta(
+        timerId = it.id,
+        title = it.title,
+        initialDurationMillis = it.initialDurationMillis,
+        isRunning = it.isRunning,
+        hasStarted = it.hasStarted,
+        colorHex = it.colorHex,
+        hasMultipleTimers = state.timers.size > 1,
+        ringingTimerId = state.ringingTimerId
+      )
+    }
+  }
+  val initialSettingsMeta = remember {
+    val s = viewModel.settings.value
+    TimerSettingsMeta(s.whiteNoiseEnabled, s.isWhiteNoisePlaying, s.quickAddSeconds)
+  }
+
+  val meta by metaFlow.collectAsStateWithLifecycle(initialValue = initialActive)
+  val settingsMeta by settingsMetaFlow.collectAsStateWithLifecycle(initialValue = initialSettingsMeta)
 
   var showEditDurationDialog by remember { mutableStateOf(false) }
   var showEditQuickAddDialog by remember { mutableStateOf(false) }
   var showWhiteNoiseSheet by remember { mutableStateOf(false) }
 
-  if (activeTimer == null) return
+  val activeMeta = meta ?: return
 
   val colorScheme = MaterialTheme.colorScheme
-  val timerColor = resolveThemeAccentColor(activeTimer.colorHex, colorScheme)
-  val isRunning = activeTimer.isRunning
-  val isFocusMode = activeTimer.hasStarted
-  val currentTotalSec = (activeTimer.initialDurationMillis / 1000L).toInt()
-  val quickAddSec = settings.quickAddSeconds
+  val timerColor = resolveThemeAccentColor(activeMeta.colorHex, colorScheme)
+  val isRunning = activeMeta.isRunning
+  val isFocusMode = activeMeta.hasStarted
+  val currentTotalSec = (activeMeta.initialDurationMillis / 1000L).toInt()
+  val quickAddSec = settingsMeta.quickAddSeconds
   val quickAddLabel = remember(quickAddSec) { formatQuickAddButtonLabel(quickAddSec) }
 
   AnimatedContent(
     targetState = isFocusMode,
     transitionSpec = {
       ContentTransform(
-        targetContentEnter = fadeIn(tween(340, easing = FastOutSlowInEasing)) +
+        targetContentEnter = fadeIn(tween(300, easing = FastOutSlowInEasing)) +
           scaleIn(
-            initialScale = 0.92f,
+            initialScale = 0.94f,
             animationSpec = spring(
               dampingRatio = Spring.DampingRatioMediumBouncy,
               stiffness = Spring.StiffnessMediumLow
             )
           ),
-        initialContentExit = fadeOut(tween(240)) +
-          scaleOut(targetScale = 0.94f, animationSpec = tween(240))
+        initialContentExit = fadeOut(tween(220)) +
+          scaleOut(targetScale = 0.95f, animationSpec = tween(220))
       )
     },
     label = "timer_focus_mode_transition"
@@ -154,8 +228,6 @@ fun TimerScreen(
       val resetInteraction = remember { MutableInteractionSource() }
       val addInteraction = remember { MutableInteractionSource() }
 
-      // Full-screen distraction-free mode:
-      // Only keep the countdown time, pause/resume button, add time button, and reset button (only when paused).
       Column(
         modifier = modifier
           .fillMaxSize()
@@ -165,9 +237,9 @@ fun TimerScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
       ) {
-        CircularProgressTimerArc(
-          progress = activeTimer.progress,
-          remainingMillis = activeTimer.remainingMillis,
+        TimerDialContainer(
+          viewModel = viewModel,
+          timerId = activeMeta.timerId,
           isRunning = isRunning,
           timerColor = if (isRunning) timerColor else MaterialTheme.colorScheme.primary,
           size = 280.dp,
@@ -188,7 +260,6 @@ fun TimerScreen(
           horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
           verticalAlignment = Alignment.CenterVertically
         ) {
-          // Reset button ONLY appears after the timer is paused
           AnimatedVisibility(
             visible = !isRunning,
             enter = fadeIn(tween(260)) +
@@ -204,7 +275,7 @@ fun TimerScreen(
               scaleOut(targetScale = 0.85f)
           ) {
             FilledTonalButton(
-              onClick = { viewModel.resetTimer(activeTimer.id) },
+              onClick = { viewModel.resetTimer(activeMeta.timerId) },
               interactionSource = resetInteraction,
               shape = RoundedCornerShape(32.dp),
               contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
@@ -221,11 +292,10 @@ fun TimerScreen(
             }
           }
 
-          // Pause / Resume button (clean minimal control without distracting icons)
           Button(
             onClick = {
-              if (isRunning) viewModel.pauseTimer(activeTimer.id)
-              else viewModel.startTimer(activeTimer.id)
+              if (isRunning) viewModel.pauseTimer(activeMeta.timerId)
+              else viewModel.startTimer(activeMeta.timerId)
             },
             interactionSource = pauseInteraction,
             colors = ButtonDefaults.buttonColors(
@@ -249,9 +319,8 @@ fun TimerScreen(
             }
           }
 
-          // Add time button (tapping adds the configured quick-add increment)
           FilledTonalButton(
-            onClick = { viewModel.addTimeToTimer(activeTimer.id, quickAddSec.toLong()) },
+            onClick = { viewModel.addTimeToTimer(activeMeta.timerId, quickAddSec.toLong()) },
             interactionSource = addInteraction,
             shape = RoundedCornerShape(32.dp),
             colors = ButtonDefaults.filledTonalButtonColors(
@@ -282,9 +351,9 @@ fun TimerScreen(
       val quickAddBtnInteraction = remember { MutableInteractionSource() }
 
       val noiseContainerColor by animateColorAsState(
-        targetValue = if (settings.isWhiteNoisePlaying) {
+        targetValue = if (settingsMeta.isWhiteNoisePlaying) {
           MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
-        } else if (settings.whiteNoiseEnabled) {
+        } else if (settingsMeta.whiteNoiseEnabled) {
           MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
         } else {
           MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
@@ -293,7 +362,7 @@ fun TimerScreen(
         label = "noise_pill_container"
       )
       val noiseBorderColor by animateColorAsState(
-        targetValue = if (settings.isWhiteNoisePlaying) {
+        targetValue = if (settingsMeta.isWhiteNoisePlaying) {
           MaterialTheme.colorScheme.secondary
         } else {
           MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
@@ -307,7 +376,6 @@ fun TimerScreen(
         label = "badge_timer_color"
       )
 
-      // Normal setup mode (before starting or after resetting)
       Column(
         modifier = modifier
           .fillMaxSize()
@@ -316,7 +384,6 @@ fun TimerScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
       ) {
-        // 1. Sleek Focus Noise Pill (Distraction-masking audio)
         Surface(
           shape = RoundedCornerShape(20.dp),
           color = noiseContainerColor,
@@ -341,27 +408,27 @@ fun TimerScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
           ) {
-            if (settings.isWhiteNoisePlaying) {
+            if (settingsMeta.isWhiteNoisePlaying) {
               AnimatedAudioWaves(color = MaterialTheme.colorScheme.secondary)
             } else {
               Icon(
                 imageVector = Icons.Default.Headphones,
                 contentDescription = null,
-                tint = if (settings.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (settingsMeta.whiteNoiseEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp)
               )
             }
 
             Text(
-              text = if (settings.isWhiteNoisePlaying)
+              text = if (settingsMeta.isWhiteNoisePlaying)
                 "Study Noise: Active"
-              else if (settings.whiteNoiseEnabled)
+              else if (settingsMeta.whiteNoiseEnabled)
                 "Study Noise: On"
               else
                 "Study Noise: Off",
               style = MaterialTheme.typography.labelMedium,
               fontWeight = FontWeight.SemiBold,
-              color = if (settings.isWhiteNoisePlaying) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+              color = if (settingsMeta.isWhiteNoisePlaying) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
             )
 
             IconButton(
@@ -378,89 +445,19 @@ fun TimerScreen(
           }
         }
 
-        // Active Timers Switcher (when multiple timers exist, e.g. started from Presets)
         AnimatedVisibility(
-          visible = timerState.timers.size > 1,
+          visible = activeMeta.hasMultipleTimers,
           enter = fadeIn(tween(240)) + scaleIn(initialScale = 0.94f),
           exit = fadeOut(tween(180)) + scaleOut(targetScale = 0.94f)
         ) {
-          Column {
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .animateContentSize(),
-              horizontalArrangement = Arrangement.Center
-            ) {
-              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                timerState.timers.forEach { timer ->
-                  val isSelected = timer.id == activeTimer.id
-                  val chipColor = resolveThemeAccentColor(timer.colorHex, colorScheme)
-                  val chipInteraction = remember(timer.id) { MutableInteractionSource() }
-                  val chipBg by animateColorAsState(
-                    targetValue = if (isSelected) chipColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                    animationSpec = tween(250),
-                    label = "chip_bg_${timer.id}"
-                  )
-                  Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = chipBg,
-                    border = BorderStroke(
-                      width = if (isSelected) 1.5.dp else 1.dp,
-                      color = if (isSelected) chipColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                    ),
-                    modifier = Modifier
-                      .fluidPressScale(chipInteraction)
-                      .clip(RoundedCornerShape(16.dp))
-                      .clickable(
-                        interactionSource = chipInteraction,
-                        indication = LocalIndication.current
-                      ) { viewModel.selectTimer(timer.id) }
-                      .testTag("active_timer_chip_${timer.id}")
-                  ) {
-                    Row(
-                      modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                      Box(
-                        modifier = Modifier
-                          .size(7.dp)
-                          .clip(CircleShape)
-                          .background(if (timer.isRunning) MaterialTheme.colorScheme.secondary else chipColor)
-                      )
-                      Text(
-                        text = "${timer.title} • ${TimeFormatter.formatTimer(timer.remainingMillis)}",
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant
-                      )
-                      Box(
-                        modifier = Modifier
-                          .size(20.dp)
-                          .clip(CircleShape)
-                          .clickable { viewModel.deleteTimer(timer.id) },
-                        contentAlignment = Alignment.Center
-                      ) {
-                        Icon(
-                          imageVector = Icons.Default.Close,
-                          contentDescription = "Remove ${timer.title}",
-                          tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                          modifier = Modifier.size(12.dp)
-                        )
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
+          ActiveTimersSwitcherRow(
+            viewModel = viewModel,
+            selectedTimerId = activeMeta.timerId
+          )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Active Timer Title Badge
         Surface(
           shape = RoundedCornerShape(14.dp),
           color = animatedBadgeColor.copy(alpha = 0.12f),
@@ -479,7 +476,7 @@ fun TimerScreen(
                 .clip(CircleShape)
                 .background(animatedBadgeColor)
             )
-            FluidAnimatedValue(targetState = activeTimer.title.uppercase()) { titleText ->
+            FluidAnimatedValue(targetState = activeMeta.title.uppercase()) { titleText ->
               Text(
                 text = titleText,
                 style = MaterialTheme.typography.labelMedium,
@@ -493,7 +490,6 @@ fun TimerScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 2. Minimalist Dynamic Countdown Arc (Tap to set duration directly)
         Box(
           contentAlignment = Alignment.Center,
           modifier = Modifier
@@ -504,31 +500,33 @@ fun TimerScreen(
               indication = LocalIndication.current
             ) { showEditDurationDialog = true }
         ) {
-          CircularProgressTimerArc(
-            progress = activeTimer.progress,
-            remainingMillis = activeTimer.remainingMillis,
+          TimerDialContainer(
+            viewModel = viewModel,
+            timerId = activeMeta.timerId,
             isRunning = false,
             timerColor = MaterialTheme.colorScheme.primary,
-            size = 240.dp
+            size = 240.dp,
+            showStatusLabel = true
           )
         }
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // 3. Dynamic Quick Study Preset Pills
         Row(
           modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState()),
           horizontalArrangement = Arrangement.Center
         ) {
-          val presets = listOf(
-            15 * 60 to "15m",
-            25 * 60 to "25m",
-            45 * 60 to "45m",
-            50 * 60 to "50m",
-            60 * 60 to "60m"
-          )
+          val presets = remember {
+            listOf(
+              15 * 60 to "15m",
+              25 * 60 to "25m",
+              45 * 60 to "45m",
+              50 * 60 to "50m",
+              60 * 60 to "60m"
+            )
+          }
 
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             presets.forEach { (sec, label) ->
@@ -537,7 +535,7 @@ fun TimerScreen(
               FilterChip(
                 selected = isSelected,
                 onClick = {
-                  viewModel.updateCurrentTimerDuration(activeTimer.id, sec.toLong())
+                  viewModel.updateCurrentTimerDuration(activeMeta.timerId, sec.toLong())
                 },
                 interactionSource = chipInteraction,
                 label = {
@@ -562,7 +560,6 @@ fun TimerScreen(
               )
             }
 
-            // Custom time button
             val customChipInteraction = remember { MutableInteractionSource() }
             FilterChip(
               selected = false,
@@ -587,15 +584,13 @@ fun TimerScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 4. Primary Setup Action Controls (Reset only appears after timer is started & paused)
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.Center,
           verticalAlignment = Alignment.CenterVertically
         ) {
-          // Start Primary Button
           Button(
-            onClick = { viewModel.startTimer(activeTimer.id) },
+            onClick = { viewModel.startTimer(activeMeta.timerId) },
             interactionSource = startBtnInteraction,
             colors = ButtonDefaults.buttonColors(
               containerColor = MaterialTheme.colorScheme.primary,
@@ -624,7 +619,6 @@ fun TimerScreen(
 
           Spacer(modifier = Modifier.width(18.dp))
 
-          // Customizable Quick Add Time Button (tap before start to customize minutes & seconds)
           Box(contentAlignment = Alignment.Center) {
             Surface(
               shape = CircleShape,
@@ -672,7 +666,6 @@ fun TimerScreen(
     }
   }
 
-  // Study Focus Noise Dialog Sheet
   if (showWhiteNoiseSheet) {
     WhiteNoiseSheet(
       viewModel = viewModel,
@@ -680,22 +673,20 @@ fun TimerScreen(
     )
   }
 
-  // Edit Duration Dialog
   if (showEditDurationDialog) {
     EditDurationDialog(
       initialSeconds = currentTotalSec,
       onDismiss = { showEditDurationDialog = false },
       onConfirm = { newSeconds ->
-        viewModel.updateCurrentTimerDuration(activeTimer.id, newSeconds.toLong())
+        viewModel.updateCurrentTimerDuration(activeMeta.timerId, newSeconds.toLong())
         showEditDurationDialog = false
       }
     )
   }
 
-  // Customize Quick-Add Increment Dialog
   if (showEditQuickAddDialog) {
     EditQuickAddDialog(
-      initialTotalSeconds = settings.quickAddSeconds,
+      initialTotalSeconds = settingsMeta.quickAddSeconds,
       onDismiss = { showEditQuickAddDialog = false },
       onConfirm = { mins, secs ->
         viewModel.setQuickAddIncrement(mins, secs)
@@ -704,12 +695,10 @@ fun TimerScreen(
     )
   }
 
-  // Ringing Alarm Dialog Overlay
-  if (timerState.ringingTimerId != null) {
-    val ringingTimer = timerState.timers.find { it.id == timerState.ringingTimerId }
-    val quickAddSec = settings.quickAddSeconds
+  if (activeMeta.ringingTimerId != null) {
+    val ringingId = activeMeta.ringingTimerId
     val alarmTransition = rememberInfiniteTransition(label = "alarm_ring_pulse")
-    val alarmScale by alarmTransition.animateFloat(
+    val alarmScaleState = alarmTransition.animateFloat(
       initialValue = 0.92f,
       targetValue = 1.14f,
       animationSpec = infiniteRepeatable(
@@ -718,7 +707,7 @@ fun TimerScreen(
       ),
       label = "alarm_scale"
     )
-    val alarmTilt by alarmTransition.animateFloat(
+    val alarmTiltState = alarmTransition.animateFloat(
       initialValue = -10f,
       targetValue = 10f,
       animationSpec = infiniteRepeatable(
@@ -744,9 +733,10 @@ fun TimerScreen(
             modifier = Modifier
               .size(40.dp)
               .graphicsLayer {
-                scaleX = alarmScale
-                scaleY = alarmScale
-                rotationZ = alarmTilt
+                val s = alarmScaleState.value
+                scaleX = s
+                scaleY = s
+                rotationZ = alarmTiltState.value
               }
           )
         }
@@ -778,9 +768,9 @@ fun TimerScreen(
       dismissButton = {
         OutlinedButton(
           onClick = {
-            if (ringingTimer != null) {
-              viewModel.addTimeToTimer(ringingTimer.id, quickAddSec.toLong())
-              viewModel.startTimer(ringingTimer.id)
+            if (ringingId != null) {
+              viewModel.addTimeToTimer(ringingId, quickAddSec.toLong())
+              viewModel.startTimer(ringingId)
             }
             viewModel.dismissAlarm()
           }
@@ -789,6 +779,122 @@ fun TimerScreen(
         }
       }
     )
+  }
+}
+
+@Composable
+private fun TimerDialContainer(
+  viewModel: ChronoViewModel,
+  timerId: String,
+  isRunning: Boolean,
+  timerColor: Color,
+  size: Dp,
+  showStatusLabel: Boolean
+) {
+  val dialFlow = remember(viewModel, timerId) {
+    viewModel.timerState
+      .map { state ->
+        val t = state.timers.find { it.id == timerId } ?: state.timers.firstOrNull()
+        (t?.progress ?: 0f) to (t?.remainingMillis ?: 0L)
+      }
+      .distinctUntilChanged()
+  }
+  val initialPair = remember(timerId) {
+    val t = viewModel.timerState.value.timers.find { it.id == timerId }
+      ?: viewModel.timerState.value.timers.firstOrNull()
+    (t?.progress ?: 0f) to (t?.remainingMillis ?: 0L)
+  }
+  val (progress, remainingMillis) = dialFlow.collectAsStateWithLifecycle(initialValue = initialPair).value
+
+  CircularProgressTimerArc(
+    progress = progress,
+    remainingMillis = remainingMillis,
+    isRunning = isRunning,
+    timerColor = timerColor,
+    size = size,
+    showStatusLabel = showStatusLabel
+  )
+}
+
+@Composable
+private fun ActiveTimersSwitcherRow(
+  viewModel: ChronoViewModel,
+  selectedTimerId: String
+) {
+  val timerState by viewModel.timerState.collectAsStateWithLifecycle()
+  val colorScheme = MaterialTheme.colorScheme
+
+  Column {
+    Spacer(modifier = Modifier.height(12.dp))
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .horizontalScroll(rememberScrollState())
+        .animateContentSize(),
+      horizontalArrangement = Arrangement.Center
+    ) {
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        timerState.timers.forEach { timer ->
+          val isSelected = timer.id == selectedTimerId
+          val chipColor = resolveThemeAccentColor(timer.colorHex, colorScheme)
+          val chipInteraction = remember(timer.id) { MutableInteractionSource() }
+          val chipBg by animateColorAsState(
+            targetValue = if (isSelected) chipColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            animationSpec = tween(250),
+            label = "chip_bg_${timer.id}"
+          )
+          Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = chipBg,
+            border = BorderStroke(
+              width = if (isSelected) 1.5.dp else 1.dp,
+              color = if (isSelected) chipColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+            ),
+            modifier = Modifier
+              .fluidPressScale(chipInteraction)
+              .clip(RoundedCornerShape(16.dp))
+              .clickable(
+                interactionSource = chipInteraction,
+                indication = LocalIndication.current
+              ) { viewModel.selectTimer(timer.id) }
+              .testTag("active_timer_chip_${timer.id}")
+          ) {
+            Row(
+              modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(7.dp)
+                  .clip(CircleShape)
+                  .background(if (timer.isRunning) MaterialTheme.colorScheme.secondary else chipColor)
+              )
+              Text(
+                text = "${timer.title} • ${TimeFormatter.formatTimer(timer.remainingMillis)}",
+                fontSize = 12.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                color = if (isSelected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant
+              )
+              Box(
+                modifier = Modifier
+                  .size(20.dp)
+                  .clip(CircleShape)
+                  .clickable { viewModel.deleteTimer(timer.id) },
+                contentAlignment = Alignment.Center
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Remove ${timer.title}",
+                  tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.size(12.dp)
+                )
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 

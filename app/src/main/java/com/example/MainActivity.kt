@@ -7,9 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -22,11 +20,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -65,8 +59,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -74,13 +69,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.IntervalPhase
 import com.example.ui.components.FluidBlobBackground
 import com.example.ui.components.SettingsDialog
@@ -109,18 +108,13 @@ class MainActivity : ComponentActivity() {
     enableEdgeToEdge()
 
     setContent {
-      val settings by viewModel.settings.collectAsState()
-      val stopwatchState by viewModel.stopwatchState.collectAsState()
-      val timerState by viewModel.timerState.collectAsState()
-      val intervalState by viewModel.intervalState.collectAsState()
+      val rootState by viewModel.rootShellState.collectAsStateWithLifecycle()
+      val isAnyActive = rootState.isAnyActive
+      val currentTab = rootState.currentTab
+      val isTimerFullScreen = rootState.isTimerFullScreen
 
-      // Dynamically keep screen awake if setting is enabled and any timer/stopwatch is active
-      val isAnyActive = stopwatchState.isRunning ||
-        timerState.timers.any { it.isRunning } ||
-        intervalState.isRunning
-
-      DisposableEffect(settings.keepScreenOn, isAnyActive) {
-        if (settings.keepScreenOn || isAnyActive) {
+      DisposableEffect(rootState.keepScreenOn, isAnyActive) {
+        if (rootState.keepScreenOn || isAnyActive) {
           window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
           window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -131,7 +125,7 @@ class MainActivity : ComponentActivity() {
       }
 
       val systemInDark = isSystemInDarkTheme()
-      val useDarkTheme = when (settings.themeMode) {
+      val useDarkTheme = when (rootState.themeMode) {
         AppThemeMode.SYSTEM -> systemInDark
         AppThemeMode.LIGHT -> false
         AppThemeMode.DARK -> true
@@ -139,14 +133,9 @@ class MainActivity : ComponentActivity() {
 
       MyApplicationTheme(
         darkTheme = useDarkTheme,
-        dynamicColor = settings.dynamicColorEnabled
+        dynamicColor = rootState.dynamicColorEnabled
       ) {
-        val currentTab by viewModel.currentTab.collectAsState()
         var showSettingsDialog by remember { mutableStateOf(false) }
-
-        val activeTimer = timerState.timers.find { it.id == timerState.selectedTimerId }
-          ?: timerState.timers.firstOrNull()
-        val isTimerFullScreen = currentTab == AppTab.TIMER && activeTimer?.hasStarted == true
 
         LaunchedEffect(isTimerFullScreen) {
           if (isTimerFullScreen) showSettingsDialog = false
@@ -170,28 +159,27 @@ class MainActivity : ComponentActivity() {
           }
         }
 
-        // BackHandler: navigate back to Timer if on another sub-tab
         BackHandler(enabled = currentTab != AppTab.TIMER) {
           viewModel.setTab(AppTab.TIMER)
         }
 
-        // Determine ambient blob colors dynamically from active Material You / M3 ColorScheme & state
         val colorScheme = MaterialTheme.colorScheme
         val (ambientPrimary, ambientSecondary) = when (currentTab) {
           AppTab.TIMER -> {
-            val timerAccent = activeTimer?.let { resolveThemeAccentColor(it.colorHex, colorScheme) }
-              ?: colorScheme.primary
+            val timerAccent = rootState.activeTimerColorHex?.let {
+              resolveThemeAccentColor(it, colorScheme)
+            } ?: colorScheme.primary
             timerAccent to colorScheme.tertiary
           }
           AppTab.STOPWATCH -> colorScheme.primary to colorScheme.secondary
           AppTab.INTERVAL -> {
             val phaseAccent = when {
-              intervalState.phase == IntervalPhase.FINISHED -> colorScheme.tertiary
-              intervalState.config.isMultiStep && intervalState.currentStep != null ->
-                resolveThemeAccentColor(intervalState.currentStep!!.colorHex, colorScheme)
-              intervalState.phase == IntervalPhase.PREPARE -> colorScheme.tertiary
-              intervalState.phase == IntervalPhase.WORK -> colorScheme.secondary
-              intervalState.phase == IntervalPhase.REST -> colorScheme.primary
+              rootState.intervalPhase == IntervalPhase.FINISHED -> colorScheme.tertiary
+              rootState.intervalIsMultiStep && rootState.intervalStepColorHex != null ->
+                resolveThemeAccentColor(rootState.intervalStepColorHex!!, colorScheme)
+              rootState.intervalPhase == IntervalPhase.PREPARE -> colorScheme.tertiary
+              rootState.intervalPhase == IntervalPhase.WORK -> colorScheme.secondary
+              rootState.intervalPhase == IntervalPhase.REST -> colorScheme.primary
               else -> colorScheme.primary
             }
             phaseAccent to colorScheme.secondary
@@ -199,8 +187,9 @@ class MainActivity : ComponentActivity() {
           AppTab.PRESETS -> colorScheme.tertiary to colorScheme.primary
         }
 
+        // Keep animated float States un-delegated so only graphicsLayer reads them at 60fps
         val logoTransition = rememberInfiniteTransition(label = "logo_float")
-        val logoBob by logoTransition.animateFloat(
+        val logoBobState = logoTransition.animateFloat(
           initialValue = -2.5f,
           targetValue = 2.5f,
           animationSpec = infiniteRepeatable(
@@ -209,7 +198,7 @@ class MainActivity : ComponentActivity() {
           ),
           label = "logo_bob"
         )
-        val logoTilt by logoTransition.animateFloat(
+        val logoTiltState = logoTransition.animateFloat(
           initialValue = -6f,
           targetValue = 6f,
           animationSpec = infiniteRepeatable(
@@ -219,12 +208,17 @@ class MainActivity : ComponentActivity() {
           label = "logo_tilt"
         )
 
+        // Track visited tabs so they compose lazily once and stay alive on switches
+        val visitedTabs = remember { mutableStateMapOf(AppTab.TIMER to true) }
+        LaunchedEffect(currentTab) {
+          visitedTabs[currentTab] = true
+        }
+
         Box(
           modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
         ) {
-          // Living Fluid Blob Backdrop across the entire app
           FluidBlobBackground(
             primaryAccent = ambientPrimary,
             secondaryAccent = ambientSecondary,
@@ -258,8 +252,8 @@ class MainActivity : ComponentActivity() {
                           .size(22.dp)
                           .graphicsLayer {
                             if (isAnyActive) {
-                              translationY = logoBob
-                              rotationZ = logoTilt
+                              translationY = logoBobState.value
+                              rotationZ = logoTiltState.value
                             }
                           }
                       )
@@ -302,14 +296,12 @@ class MainActivity : ComponentActivity() {
                   tonalElevation = 8.dp,
                   modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)
                 ) {
-                  // 1. Timer Tab (First Tab)
-                  val anyTimerRunning = timerState.timers.any { it.isRunning }
                   FluidNavBarItem(
                     selected = currentTab == AppTab.TIMER,
                     onClick = { viewModel.setTab(AppTab.TIMER) },
                     icon = {
                       Icon(
-                        imageVector = if (anyTimerRunning || currentTab == AppTab.TIMER) Icons.Filled.HourglassBottom else Icons.Outlined.HourglassEmpty,
+                        imageVector = if (rootState.anyTimerRunning || currentTab == AppTab.TIMER) Icons.Filled.HourglassBottom else Icons.Outlined.HourglassEmpty,
                         contentDescription = "Timer"
                       )
                     },
@@ -317,7 +309,6 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.testTag("nav_tab_timer")
                   )
 
-                  // 2. Stopwatch Tab
                   FluidNavBarItem(
                     selected = currentTab == AppTab.STOPWATCH,
                     onClick = { viewModel.setTab(AppTab.STOPWATCH) },
@@ -331,7 +322,6 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.testTag("nav_tab_stopwatch")
                   )
 
-                  // 3. Interval Tab
                   FluidNavBarItem(
                     selected = currentTab == AppTab.INTERVAL,
                     onClick = { viewModel.setTab(AppTab.INTERVAL) },
@@ -345,7 +335,6 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.testTag("nav_tab_interval")
                   )
 
-                  // 4. Presets Tab
                   FluidNavBarItem(
                     selected = currentTab == AppTab.PRESETS,
                     onClick = { viewModel.setTab(AppTab.PRESETS) },
@@ -367,43 +356,18 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .padding(innerPadding)
             ) {
-              AnimatedContent(
-                targetState = currentTab,
-                transitionSpec = {
-                  val order = listOf(AppTab.TIMER, AppTab.STOPWATCH, AppTab.INTERVAL, AppTab.PRESETS)
-                  val fromIdx = order.indexOf(initialState)
-                  val toIdx = order.indexOf(targetState)
-                  val direction = if (toIdx >= fromIdx) 1 else -1
-
-                  ContentTransform(
-                    targetContentEnter = slideInHorizontally(
-                      animationSpec = tween(340, easing = FastOutSlowInEasing)
-                    ) { width -> direction * (width / 5) } +
-                      fadeIn(tween(300, easing = FastOutSlowInEasing)) +
-                      scaleIn(
-                        initialScale = 0.96f,
-                        animationSpec = spring(
-                          dampingRatio = Spring.DampingRatioNoBouncy,
-                          stiffness = Spring.StiffnessMediumLow
-                        )
-                      ),
-                    initialContentExit = slideOutHorizontally(
-                      animationSpec = tween(260, easing = FastOutSlowInEasing)
-                    ) { width -> -direction * (width / 6) } +
-                      fadeOut(tween(220)) +
-                      scaleOut(
-                        targetScale = 0.97f,
-                        animationSpec = tween(220)
-                      )
-                  )
-                },
-                label = "tab_fluid_transition"
-              ) { tab ->
-                when (tab) {
-                  AppTab.STOPWATCH -> StopwatchScreen(viewModel = viewModel)
-                  AppTab.TIMER -> TimerScreen(viewModel = viewModel)
-                  AppTab.INTERVAL -> IntervalScreen(viewModel = viewModel)
-                  AppTab.PRESETS -> PresetsScreen(viewModel = viewModel)
+              AppTab.entries.forEach { tab ->
+                if (visitedTabs[tab] == true) {
+                  key(tab) {
+                    KeptAliveTabSlot(isSelected = currentTab == tab) {
+                      when (tab) {
+                        AppTab.STOPWATCH -> StopwatchScreen(viewModel = viewModel)
+                        AppTab.TIMER -> TimerScreen(viewModel = viewModel)
+                        AppTab.INTERVAL -> IntervalScreen(viewModel = viewModel)
+                        AppTab.PRESETS -> PresetsScreen(viewModel = viewModel)
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -421,6 +385,42 @@ class MainActivity : ComponentActivity() {
   }
 }
 
+/**
+ * Keeps visited tab compositions alive in memory with a crisp 150ms alpha crossfade,
+ * skipping placement/drawing/pointer-hits when off-screen and clearing semantics on inactive tabs.
+ */
+@Composable
+private fun KeptAliveTabSlot(
+  isSelected: Boolean,
+  content: @Composable () -> Unit
+) {
+  val alphaState = animateFloatAsState(
+    targetValue = if (isSelected) 1f else 0f,
+    animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+    label = "tab_crossfade_alpha"
+  )
+
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .zIndex(if (isSelected) 1f else 0f)
+      .layout { measurable, constraints ->
+        val placeable = measurable.measure(constraints)
+        layout(placeable.width, placeable.height) {
+          val currentAlpha = alphaState.value
+          if (isSelected || currentAlpha > 0.005f) {
+            placeable.placeRelativeWithLayer(0, 0) {
+              alpha = currentAlpha
+            }
+          }
+        }
+      }
+      .then(if (!isSelected) Modifier.clearAndSetSemantics {} else Modifier)
+  ) {
+    content()
+  }
+}
+
 @Composable
 private fun androidx.compose.foundation.layout.RowScope.FluidNavBarItem(
   selected: Boolean,
@@ -429,7 +429,7 @@ private fun androidx.compose.foundation.layout.RowScope.FluidNavBarItem(
   label: String,
   modifier: Modifier = Modifier
 ) {
-  val iconScale by animateFloatAsState(
+  val iconScaleState = animateFloatAsState(
     targetValue = if (selected) 1.15f else 1f,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -444,8 +444,9 @@ private fun androidx.compose.foundation.layout.RowScope.FluidNavBarItem(
     icon = {
       Box(
         modifier = Modifier.graphicsLayer {
-          scaleX = iconScale
-          scaleY = iconScale
+          val s = iconScaleState.value
+          scaleX = s
+          scaleY = s
         }
       ) {
         icon()
