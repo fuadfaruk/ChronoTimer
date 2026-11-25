@@ -42,6 +42,11 @@ enum class NoiseProfile(
     "Deep Brown Noise",
     "Brown Noise",
     "Deep 1/f² noise spectrum resembling a distant waterfall or heavy surf for deep immersion."
+  ),
+  CUSTOM_AUDIO(
+    "Custom Device Audio",
+    "Custom Audio",
+    "Play any audio file from your device on a seamless loop during focus sessions."
   )
 }
 
@@ -292,6 +297,7 @@ class VoiceMaskingNoiseGenerator {
       NoiseProfile.DEEP_VOICE_MASKING -> generateVoiceMasking(buffer, volume, deepVoiceMaskingCoeffs)
       NoiseProfile.PINK_NOISE -> generatePinkNoise(buffer, volume)
       NoiseProfile.BROWN_NOISE -> generateBrownNoise(buffer, volume)
+      NoiseProfile.CUSTOM_AUDIO -> buffer.fill(0)
     }
   }
 

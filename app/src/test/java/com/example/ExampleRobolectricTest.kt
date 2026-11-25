@@ -259,4 +259,76 @@ class ExampleRobolectricTest {
     assertEquals("LIGHT", repository.getThemeMode())
     assertFalse(repository.getDynamicColorEnabled())
   }
+
+  @Test
+  fun `test SoundHapticHelper high-frequency triggers and lifecycle on dedicated CoroutineScope`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher()
+    val helper = com.example.util.SoundHapticHelper(context, testDispatcher)
+
+    // High-frequency burst of sound & vibration calls must return immediately without blocking
+    repeat(100) { idx ->
+      helper.playClickSound(true)
+      helper.vibrateClick(true)
+      helper.playLapSound(true)
+      helper.vibrateLap(true)
+      helper.playCountdownBeep(true, isFinalGo = idx % 2 == 0)
+    }
+
+    // Drain queued work on the helper's dispatcher
+    testDispatcher.scheduler.runCurrent()
+
+    // Alarm alert start/stop and idempotent release
+    helper.startAlarmAlert(soundEnabled = true, vibrationEnabled = true)
+    testDispatcher.scheduler.runCurrent()
+    helper.stopAlarmAlert()
+    testDispatcher.scheduler.runCurrent()
+
+    helper.release()
+    // Calling triggers or release again after release must be a safe no-op
+    helper.playClickSound(true)
+    helper.vibrateClick(true)
+    helper.release()
+    testDispatcher.scheduler.advanceUntilIdle()
+  }
+
+  @Test
+  fun `test custom device audio persistence, ViewModel selection, and clearing`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val repository = PresetRepository(app)
+
+    assertEquals(null, repository.getCustomAudioUri())
+    assertEquals(null, repository.getCustomAudioName())
+
+    val vm = com.example.viewmodel.ChronoViewModel(app)
+    assertEquals(null, vm.settings.value.customAudioUri)
+    assertEquals(null, vm.settings.value.customAudioName)
+
+    // Previewing CUSTOM_AUDIO without a chosen URI must safely remain inactive
+    vm.toggleNoiseProfilePreview(NoiseProfile.CUSTOM_AUDIO)
+    assertFalse(vm.settings.value.isWhiteNoisePlaying)
+
+    // Selecting a custom audio URI updates state, persists URI + fallback name, and selects CUSTOM_AUDIO
+    val sampleUri = android.net.Uri.parse("content://media/external/audio/media/study_lofi.mp3")
+    vm.setCustomAudioUri(sampleUri, selectAsDefaultProfile = true)
+
+    assertEquals(sampleUri.toString(), vm.settings.value.customAudioUri)
+    assertEquals("study_lofi.mp3", vm.settings.value.customAudioName)
+    assertEquals(NoiseProfile.CUSTOM_AUDIO, vm.settings.value.whiteNoiseProfile)
+    assertEquals(sampleUri.toString(), repository.getCustomAudioUri())
+    assertEquals("study_lofi.mp3", repository.getCustomAudioName())
+    assertEquals(NoiseProfile.CUSTOM_AUDIO.name, repository.getWhiteNoiseProfile())
+
+    // Volume update propagates to CustomAudioPlayer
+    vm.setWhiteNoiseVolume(0.42f)
+    assertEquals(0.42f, vm.customAudioPlayer.targetVolume, 0.001f)
+
+    // Clearing custom audio removes persisted URI/name and resets profile to VOICE_MASKING
+    vm.clearCustomAudio()
+    assertEquals(null, vm.settings.value.customAudioUri)
+    assertEquals(null, vm.settings.value.customAudioName)
+    assertEquals(NoiseProfile.VOICE_MASKING, vm.settings.value.whiteNoiseProfile)
+    assertEquals(null, repository.getCustomAudioUri())
+    assertEquals(null, repository.getCustomAudioName())
+  }
 }

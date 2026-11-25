@@ -93,6 +93,7 @@ import com.example.ui.components.fluidPulseHalo
 import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.ui.theme.contrastingContentColor
 import com.example.ui.theme.resolveThemeAccentColor
+import com.example.util.NoiseProfile
 import com.example.viewmodel.ChronoViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -124,9 +125,9 @@ fun IntervalScreen(
       }
       .distinctUntilChanged()
   }
-  val isNoisePlayingFlow = remember(viewModel) {
+  val noiseAudioMetaFlow = remember(viewModel) {
     viewModel.settings
-      .map { it.isWhiteNoisePlaying }
+      .map { it.isWhiteNoisePlaying to it.customAudioName }
       .distinctUntilChanged()
   }
 
@@ -135,9 +136,9 @@ fun IntervalScreen(
     IntervalScreenMeta(s.config, s.phase, s.currentSet, s.currentStepIndex, s.isRunning)
   }
   val meta by metaFlow.collectAsStateWithLifecycle(initialValue = initialMeta)
-  val isWhiteNoisePlaying by isNoisePlayingFlow.collectAsStateWithLifecycle(
-    initialValue = viewModel.settings.value.isWhiteNoisePlaying
-  )
+  val (isWhiteNoisePlaying, customAudioName) = noiseAudioMetaFlow.collectAsStateWithLifecycle(
+    initialValue = viewModel.settings.value.isWhiteNoisePlaying to viewModel.settings.value.customAudioName
+  ).value
   val customIntervalPresets by viewModel.customIntervalPresets.collectAsStateWithLifecycle()
 
   var showQuickCustomDialog by remember { mutableStateOf(false) }
@@ -437,7 +438,9 @@ fun IntervalScreen(
           .testTag("interval_sound_status_pill")
       ) {
         Row(
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+          modifier = Modifier
+            .widthIn(max = 260.dp)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -451,15 +454,22 @@ fun IntervalScreen(
               modifier = Modifier.size(14.dp)
             )
           }
+          val stepSoundLabel = if (stepSound == NoiseProfile.CUSTOM_AUDIO && !customAudioName.isNullOrBlank()) {
+            customAudioName
+          } else {
+            stepSound?.shortLabel
+          }
           Text(
-            text = if (stepSound != null) {
-              if (isPlayingStepSound) "Playing: ${stepSound.shortLabel}" else "Sound: ${stepSound.shortLabel}"
+            text = if (stepSoundLabel != null) {
+              if (isPlayingStepSound) "Playing: $stepSoundLabel" else "Sound: $stepSoundLabel"
             } else {
               "Silent Interval"
             },
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
-            color = if (isPlayingStepSound) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (isPlayingStepSound) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
         }
       }

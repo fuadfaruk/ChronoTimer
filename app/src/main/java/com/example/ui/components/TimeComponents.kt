@@ -227,8 +227,9 @@ fun StopwatchAnalogDigitalDial(
     ) {
       Canvas(modifier = Modifier.fillMaxSize()) {
         val w = this.size.width
-        val center = Offset(w / 2f, this.size.height / 2f)
-        val radius = w / 2f - 14.dp.toPx()
+        val h = this.size.height
+        val center = Offset(w / 2f, h / 2f)
+        val radius = minOf(w, h) / 2f - 14.dp.toPx()
         val runningWeight = runningWeightState.value
         val blobPhase = blobPhaseState.value
         val pulseAlpha = pulseAlphaState.value
@@ -635,7 +636,7 @@ fun CircularProgressTimerArc(
         val w = (fullW - innerPadding * 2f).coerceAtLeast(1f)
         val h = (fullH - innerPadding * 2f).coerceAtLeast(1f)
         val center = Offset(w / 2f, h / 2f)
-        val radius = (w / 2f) - 6.dp.toPx()
+        val radius = (minOf(w, h) / 2f) - 6.dp.toPx()
 
         val animatedProgress = animatedProgressState.value
         val animatedColor = animatedColorState.value

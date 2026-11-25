@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -28,7 +30,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeUp
@@ -38,12 +43,15 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -56,6 +64,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.RobotoMonoFontFamily
@@ -70,6 +79,13 @@ fun WhiteNoiseSheet(
   onDismiss: () -> Unit
 ) {
   val settings by viewModel.settings.collectAsState()
+  val audioPickerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocument()
+  ) { uri ->
+    if (uri != null) {
+      viewModel.setCustomAudioUri(uri, selectAsDefaultProfile = true)
+    }
+  }
 
   AlertDialog(
     onDismissRequest = {
@@ -175,8 +191,10 @@ fun WhiteNoiseSheet(
         )
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-          NoiseProfile.values().forEach { profile ->
+          NoiseProfile.entries.forEach { profile ->
             val isSelected = settings.whiteNoiseProfile == profile
+            val isCustomProfile = profile == NoiseProfile.CUSTOM_AUDIO
+            val hasCustomAudio = !settings.customAudioUri.isNullOrBlank()
             val cardInteraction = remember(profile) { MutableInteractionSource() }
             val cardBg by animateColorAsState(
               targetValue = if (isSelected)
@@ -202,42 +220,143 @@ fun WhiteNoiseSheet(
                 .clickable(
                   interactionSource = cardInteraction,
                   indication = LocalIndication.current
-                ) { viewModel.setWhiteNoiseProfile(profile) }
+                ) {
+                  if (isCustomProfile && !hasCustomAudio) {
+                    audioPickerLauncher.launch(arrayOf("audio/*"))
+                  } else {
+                    viewModel.setWhiteNoiseProfile(profile)
+                  }
+                }
+                .testTag("noise_profile_${profile.name}")
             ) {
-              Row(
+              Column(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically
+                  .padding(10.dp)
               ) {
-                Box(
-                  modifier = Modifier
-                    .size(16.dp)
-                    .clip(CircleShape)
-                    .border(
-                      2.dp,
-                      if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                      CircleShape
-                    )
-                    .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
-                )
-
-                Spacer(modifier = Modifier.width(10.dp))
-
-                Column {
-                  Text(
-                    text = profile.displayName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Box(
+                    modifier = Modifier
+                      .size(16.dp)
+                      .clip(CircleShape)
+                      .border(
+                        2.dp,
+                        if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                        CircleShape
+                      )
+                      .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
                   )
-                  Spacer(modifier = Modifier.height(2.dp))
+
+                  Spacer(modifier = Modifier.width(10.dp))
+
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = profile.displayName,
+                      style = MaterialTheme.typography.bodyMedium,
+                      fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                      color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    if (isCustomProfile) {
+                      if (hasCustomAudio) {
+                        Row(
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                          Icon(
+                            imageVector = Icons.Default.MusicNote,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(13.dp)
+                          )
+                          Text(
+                            text = settings.customAudioName ?: "Selected audio file",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                          )
+                        }
+                      } else {
+                        Text(
+                          text = profile.description,
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          fontSize = 11.sp,
+                          lineHeight = 15.sp
+                        )
+                      }
+                    } else {
+                      Text(
+                        text = profile.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                      )
+                    }
+                  }
+
+                  if (isCustomProfile) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = MaterialTheme.colorScheme.primaryContainer,
+                      modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { audioPickerLauncher.launch(arrayOf("audio/*")) }
+                        .testTag("custom_audio_browse_btn")
+                    ) {
+                      Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                      ) {
+                        Icon(
+                          imageVector = Icons.Default.AudioFile,
+                          contentDescription = null,
+                          tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                          modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                          text = if (hasCustomAudio) "Change" else "Browse",
+                          style = MaterialTheme.typography.labelSmall,
+                          fontWeight = FontWeight.Bold,
+                          color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                      }
+                    }
+
+                    if (hasCustomAudio) {
+                      IconButton(
+                        onClick = { viewModel.clearCustomAudio() },
+                        modifier = Modifier
+                          .size(28.dp)
+                          .testTag("custom_audio_clear_btn")
+                      ) {
+                        Icon(
+                          imageVector = Icons.Default.Close,
+                          contentDescription = "Remove custom audio",
+                          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                          modifier = Modifier.size(15.dp)
+                        )
+                      }
+                    }
+                  }
+                }
+
+                if (isCustomProfile && settings.customAudioError != null) {
+                  Spacer(modifier = Modifier.height(6.dp))
                   Text(
-                    text = profile.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp
+                    text = settings.customAudioError!!,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 11.sp
                   )
                 }
               }
@@ -290,10 +409,18 @@ fun WhiteNoiseSheet(
           )
         }
 
-        // Test Sound Preview Button
+        // Test Sound Preview Button (or Choose File if Custom Audio has no track selected yet)
+        val needsCustomFile = settings.whiteNoiseProfile == NoiseProfile.CUSTOM_AUDIO &&
+          settings.customAudioUri.isNullOrBlank()
         val previewInteraction = remember { MutableInteractionSource() }
         OutlinedButton(
-          onClick = { viewModel.toggleWhiteNoisePreview() },
+          onClick = {
+            if (needsCustomFile) {
+              audioPickerLauncher.launch(arrayOf("audio/*"))
+            } else {
+              viewModel.toggleWhiteNoisePreview()
+            }
+          },
           interactionSource = previewInteraction,
           shape = RoundedCornerShape(12.dp),
           modifier = Modifier
@@ -303,14 +430,26 @@ fun WhiteNoiseSheet(
             .testTag("white_noise_test_preview_btn")
         ) {
           Icon(
-            imageVector = if (settings.isWhiteNoisePlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+            imageVector = when {
+              needsCustomFile -> Icons.Default.AudioFile
+              settings.isWhiteNoisePlaying -> Icons.Default.Stop
+              else -> Icons.Default.PlayArrow
+            },
             contentDescription = null,
-            tint = if (settings.isWhiteNoisePlaying) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+            tint = if (settings.isWhiteNoisePlaying && !needsCustomFile) {
+              MaterialTheme.colorScheme.tertiary
+            } else {
+              MaterialTheme.colorScheme.primary
+            },
             modifier = Modifier.size(18.dp)
           )
           Spacer(modifier = Modifier.width(8.dp))
           Text(
-            text = if (settings.isWhiteNoisePlaying) "Stop Audio Preview" else "Test Focus Audio",
+            text = when {
+              needsCustomFile -> "Choose Audio File"
+              settings.isWhiteNoisePlaying -> "Stop Audio Preview"
+              else -> "Test Focus Audio"
+            },
             fontWeight = FontWeight.SemiBold,
             fontSize = 13.sp
           )

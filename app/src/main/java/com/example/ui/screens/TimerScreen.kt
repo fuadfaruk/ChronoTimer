@@ -1,24 +1,26 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
@@ -33,16 +35,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -82,6 +82,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -96,6 +97,7 @@ import com.example.ui.components.fluidPressScale
 import com.example.ui.components.fluidPulseHalo
 import com.example.ui.theme.RobotoMonoFontFamily
 import com.example.ui.theme.resolveThemeAccentColor
+import com.example.util.NoiseProfile
 import com.example.viewmodel.ChronoViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -116,6 +118,8 @@ private data class TimerScreenMeta(
 private data class TimerSettingsMeta(
   val whiteNoiseEnabled: Boolean,
   val isWhiteNoisePlaying: Boolean,
+  val whiteNoiseProfile: NoiseProfile,
+  val customAudioName: String?,
   val quickAddSeconds: Int
 )
 
@@ -123,7 +127,9 @@ private data class TimerSettingsMeta(
 @Composable
 fun TimerScreen(
   viewModel: ChronoViewModel,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  standbyTopPadding: Dp = 0.dp,
+  standbyBottomPadding: Dp = 0.dp
 ) {
   val metaFlow = remember(viewModel) {
     viewModel.timerState
@@ -151,6 +157,8 @@ fun TimerScreen(
         TimerSettingsMeta(
           whiteNoiseEnabled = s.whiteNoiseEnabled,
           isWhiteNoisePlaying = s.isWhiteNoisePlaying,
+          whiteNoiseProfile = s.whiteNoiseProfile,
+          customAudioName = s.customAudioName,
           quickAddSeconds = s.quickAddSeconds
         )
       }
@@ -175,7 +183,13 @@ fun TimerScreen(
   }
   val initialSettingsMeta = remember {
     val s = viewModel.settings.value
-    TimerSettingsMeta(s.whiteNoiseEnabled, s.isWhiteNoisePlaying, s.quickAddSeconds)
+    TimerSettingsMeta(
+      s.whiteNoiseEnabled,
+      s.isWhiteNoisePlaying,
+      s.whiteNoiseProfile,
+      s.customAudioName,
+      s.quickAddSeconds
+    )
   }
 
   val meta by metaFlow.collectAsStateWithLifecycle(initialValue = initialActive)
@@ -195,195 +209,126 @@ fun TimerScreen(
   val quickAddSec = settingsMeta.quickAddSeconds
   val quickAddLabel = remember(quickAddSec) { formatQuickAddButtonLabel(quickAddSec) }
 
-  AnimatedContent(
-    targetState = isFocusMode,
-    transitionSpec = {
-      ContentTransform(
-        targetContentEnter = fadeIn(tween(300, easing = FastOutSlowInEasing)) +
-          scaleIn(
-            initialScale = 0.94f,
-            animationSpec = spring(
-              dampingRatio = Spring.DampingRatioMediumBouncy,
-              stiffness = Spring.StiffnessMediumLow
-            )
-          ),
-        initialContentExit = fadeOut(tween(220)) +
-          scaleOut(targetScale = 0.95f, animationSpec = tween(220))
-      )
-    },
-    label = "timer_focus_mode_transition"
-  ) { focusActive ->
-    if (focusActive) {
-      val focusButtonColor by animateColorAsState(
-        targetValue = if (isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-        animationSpec = tween(350, easing = FastOutSlowInEasing),
-        label = "focus_btn_color"
-      )
-      val focusContentColor by animateColorAsState(
-        targetValue = if (isRunning) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
-        animationSpec = tween(350, easing = FastOutSlowInEasing),
-        label = "focus_btn_content_color"
-      )
-      val pauseInteraction = remember { MutableInteractionSource() }
-      val resetInteraction = remember { MutableInteractionSource() }
-      val addInteraction = remember { MutableInteractionSource() }
+  // Smoothly animate outer clearance so system bars hiding/showing never triggers a layout snap
+  val topPad by animateDpAsState(
+    targetValue = if (isFocusMode) 24.dp else standbyTopPadding + 8.dp,
+    animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+    label = "timer_top_pad"
+  )
+  val bottomPad by animateDpAsState(
+    targetValue = if (isFocusMode) 24.dp else standbyBottomPadding + 8.dp,
+    animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+    label = "timer_bottom_pad"
+  )
 
-      Column(
-        modifier = modifier
-          .fillMaxSize()
-          .windowInsetsPadding(WindowInsets.safeDrawing)
-          .verticalScroll(rememberScrollState())
-          .padding(horizontal = 24.dp, vertical = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-      ) {
-        TimerDialContainer(
-          viewModel = viewModel,
-          timerId = activeMeta.timerId,
-          isRunning = isRunning,
-          timerColor = if (isRunning) timerColor else MaterialTheme.colorScheme.primary,
-          size = 280.dp,
-          showStatusLabel = false
-        )
+  // Persistent dial smoothly scales via GPU graphicsLayer (240dp standby <-> 280dp focus)
+  val dialHeightDp by animateDpAsState(
+    targetValue = if (isFocusMode) 280.dp else 240.dp,
+    animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+    label = "timer_dial_height"
+  )
+  val dialMorphScaleState = animateFloatAsState(
+    targetValue = if (isFocusMode) 1f else 240f / 280f,
+    animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+    label = "timer_dial_morph_scale"
+  )
+  val dialBottomGap by animateDpAsState(
+    targetValue = if (isFocusMode) 48.dp else 20.dp,
+    animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+    label = "timer_dial_bottom_gap"
+  )
 
-        Spacer(modifier = Modifier.height(48.dp))
+  val primaryButtonColor by animateColorAsState(
+    targetValue = if (isFocusMode && isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+    animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+    label = "timer_primary_btn_color"
+  )
+  val primaryButtonContentColor by animateColorAsState(
+    targetValue = if (isFocusMode && isRunning) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
+    animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+    label = "timer_primary_btn_content_color"
+  )
+  val primaryButtonWidth by animateDpAsState(
+    targetValue = if (isFocusMode) 136.dp else 148.dp,
+    animationSpec = tween(durationMillis = 340, easing = FastOutSlowInEasing),
+    label = "timer_primary_btn_width"
+  )
+  val actionRowGap by animateDpAsState(
+    targetValue = if (isFocusMode) 16.dp else 18.dp,
+    animationSpec = tween(durationMillis = 340, easing = FastOutSlowInEasing),
+    label = "timer_action_row_gap"
+  )
+  val quickAddWidth by animateDpAsState(
+    targetValue = if (isFocusMode) 88.dp else 58.dp,
+    animationSpec = tween(durationMillis = 340, easing = FastOutSlowInEasing),
+    label = "timer_quick_add_width"
+  )
+  val quickAddHeight by animateDpAsState(
+    targetValue = if (isFocusMode) 60.dp else 58.dp,
+    animationSpec = tween(durationMillis = 340, easing = FastOutSlowInEasing),
+    label = "timer_quick_add_height"
+  )
+  val quickAddBorderAlpha by animateFloatAsState(
+    targetValue = if (isFocusMode) 0f else 0.55f,
+    animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+    label = "timer_quick_add_border_alpha"
+  )
 
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(
-              animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMediumLow
-              )
-            ),
-          horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          AnimatedVisibility(
-            visible = !isRunning,
-            enter = fadeIn(tween(260)) +
-              expandHorizontally(
-                animationSpec = spring(
-                  dampingRatio = Spring.DampingRatioMediumBouncy,
-                  stiffness = Spring.StiffnessMediumLow
-                )
-              ) +
-              scaleIn(initialScale = 0.85f),
-            exit = fadeOut(tween(180)) +
-              shrinkHorizontally(animationSpec = tween(200)) +
-              scaleOut(targetScale = 0.85f)
-          ) {
-            FilledTonalButton(
-              onClick = { viewModel.resetTimer(activeMeta.timerId) },
-              interactionSource = resetInteraction,
-              shape = RoundedCornerShape(32.dp),
-              contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
-              modifier = Modifier
-                .height(60.dp)
-                .fluidPressScale(resetInteraction)
-                .testTag("timer_reset_btn")
-            ) {
-              Text(
-                text = "RESET",
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp
-              )
-            }
-          }
+  val noisePillInteraction = remember { MutableInteractionSource() }
+  val dialTapInteraction = remember { MutableInteractionSource() }
+  val primaryBtnInteraction = remember { MutableInteractionSource() }
+  val resetBtnInteraction = remember { MutableInteractionSource() }
+  val quickAddBtnInteraction = remember { MutableInteractionSource() }
 
-          Button(
-            onClick = {
-              if (isRunning) viewModel.pauseTimer(activeMeta.timerId)
-              else viewModel.startTimer(activeMeta.timerId)
-            },
-            interactionSource = pauseInteraction,
-            colors = ButtonDefaults.buttonColors(
-              containerColor = focusButtonColor,
-              contentColor = focusContentColor
-            ),
-            shape = RoundedCornerShape(32.dp),
-            modifier = Modifier
-              .height(60.dp)
-              .widthIn(min = 136.dp)
-              .fluidPulseHalo(color = focusButtonColor, isActive = isRunning)
-              .fluidPressScale(pauseInteraction)
-              .testTag("timer_start_pause_btn")
-          ) {
-            FluidAnimatedValue(targetState = isRunning) { running ->
-              Text(
-                text = if (running) "PAUSE" else "RESUME",
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp
-              )
-            }
-          }
-
-          FilledTonalButton(
-            onClick = { viewModel.addTimeToTimer(activeMeta.timerId, quickAddSec.toLong()) },
-            interactionSource = addInteraction,
-            shape = RoundedCornerShape(32.dp),
-            colors = ButtonDefaults.filledTonalButtonColors(
-              containerColor = MaterialTheme.colorScheme.secondaryContainer,
-              contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-            ),
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp),
-            modifier = Modifier
-              .height(60.dp)
-              .widthIn(min = 76.dp)
-              .fluidPressScale(addInteraction)
-              .testTag("timer_add_new_btn")
-          ) {
-            Text(
-              text = quickAddLabel.replace("\n", " "),
-              fontFamily = RobotoMonoFontFamily,
-              fontWeight = FontWeight.Bold,
-              fontSize = 15.sp,
-              textAlign = TextAlign.Center
-            )
-          }
-        }
-      }
+  val noiseContainerColor by animateColorAsState(
+    targetValue = if (settingsMeta.isWhiteNoisePlaying) {
+      MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+    } else if (settingsMeta.whiteNoiseEnabled) {
+      MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
     } else {
-      val noisePillInteraction = remember { MutableInteractionSource() }
-      val dialTapInteraction = remember { MutableInteractionSource() }
-      val startBtnInteraction = remember { MutableInteractionSource() }
-      val quickAddBtnInteraction = remember { MutableInteractionSource() }
+      MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    },
+    animationSpec = tween(350),
+    label = "noise_pill_container"
+  )
+  val noiseBorderColor by animateColorAsState(
+    targetValue = if (settingsMeta.isWhiteNoisePlaying) {
+      MaterialTheme.colorScheme.secondary
+    } else {
+      MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+    },
+    animationSpec = tween(350),
+    label = "noise_pill_border"
+  )
+  val animatedBadgeColor by animateColorAsState(
+    targetValue = timerColor,
+    animationSpec = tween(400),
+    label = "badge_timer_color"
+  )
 
-      val noiseContainerColor by animateColorAsState(
-        targetValue = if (settingsMeta.isWhiteNoisePlaying) {
-          MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
-        } else if (settingsMeta.whiteNoiseEnabled) {
-          MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-        } else {
-          MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        },
-        animationSpec = tween(350),
-        label = "noise_pill_container"
-      )
-      val noiseBorderColor by animateColorAsState(
-        targetValue = if (settingsMeta.isWhiteNoisePlaying) {
-          MaterialTheme.colorScheme.secondary
-        } else {
-          MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-        },
-        animationSpec = tween(350),
-        label = "noise_pill_border"
-      )
-      val animatedBadgeColor by animateColorAsState(
-        targetValue = timerColor,
-        animationSpec = tween(400),
-        label = "badge_timer_color"
-      )
-
-      Column(
-        modifier = modifier
-          .fillMaxSize()
-          .verticalScroll(rememberScrollState())
-          .padding(horizontal = 20.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-      ) {
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .verticalScroll(rememberScrollState())
+      .padding(start = 20.dp, end = 20.dp, top = topPad, bottom = bottomPad),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center
+  ) {
+    // 1. Top Standby Chrome (Study Noise Pill, Active Timers Switcher, Timer Title Badge)
+    AnimatedVisibility(
+      visible = !isFocusMode,
+      enter = fadeIn(tween(durationMillis = 300, delayMillis = 50, easing = FastOutSlowInEasing)) +
+        expandVertically(
+          animationSpec = tween(durationMillis = 340, easing = FastOutSlowInEasing),
+          expandFrom = Alignment.Bottom
+        ),
+      exit = fadeOut(tween(durationMillis = 190, easing = FastOutSlowInEasing)) +
+        shrinkVertically(
+          animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+          shrinkTowards = Alignment.Bottom
+        )
+    ) {
+      Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
           shape = RoundedCornerShape(20.dp),
           color = noiseContainerColor,
@@ -404,7 +349,9 @@ fun TimerScreen(
             .testTag("timer_white_noise_card")
         ) {
           Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            modifier = Modifier
+              .widthIn(max = 268.dp)
+              .padding(horizontal = 14.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
           ) {
@@ -419,21 +366,36 @@ fun TimerScreen(
               )
             }
 
-            Text(
-              text = if (settingsMeta.isWhiteNoisePlaying)
+            val isCustomSelected = settingsMeta.whiteNoiseProfile == NoiseProfile.CUSTOM_AUDIO &&
+              !settingsMeta.customAudioName.isNullOrBlank()
+            val pillLabel = when {
+              settingsMeta.isWhiteNoisePlaying && isCustomSelected ->
+                "Playing: ${settingsMeta.customAudioName}"
+              settingsMeta.isWhiteNoisePlaying ->
                 "Study Noise: Active"
-              else if (settingsMeta.whiteNoiseEnabled)
+              settingsMeta.whiteNoiseEnabled && isCustomSelected ->
+                "Audio: ${settingsMeta.customAudioName}"
+              settingsMeta.whiteNoiseEnabled ->
                 "Study Noise: On"
-              else
-                "Study Noise: Off",
+              else ->
+                "Study Noise: Off"
+            }
+
+            Text(
+              text = pillLabel,
               style = MaterialTheme.typography.labelMedium,
               fontWeight = FontWeight.SemiBold,
-              color = if (settingsMeta.isWhiteNoisePlaying) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+              color = if (settingsMeta.isWhiteNoisePlaying) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f, fill = false)
             )
 
             IconButton(
               onClick = { viewModel.toggleWhiteNoise() },
-              modifier = Modifier.size(24.dp).testTag("timer_white_noise_quick_switch")
+              modifier = Modifier
+                .size(24.dp)
+                .testTag("timer_white_noise_quick_switch")
             ) {
               Icon(
                 imageVector = Icons.Default.Tune,
@@ -489,29 +451,63 @@ fun TimerScreen(
         }
 
         Spacer(modifier = Modifier.height(12.dp))
+      }
+    }
 
+    // 2. Single Persistent Dial (morphs seamlessly without destroying Canvas shader caches or wave phases)
+    Box(
+      contentAlignment = Alignment.Center,
+      modifier = Modifier.size(dialHeightDp)
+    ) {
+      Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+          .requiredSize(280.dp)
+          .graphicsLayer {
+            val s = dialMorphScaleState.value
+            scaleX = s
+            scaleY = s
+          }
+          .fluidPressScale(dialTapInteraction, pressedScale = 0.96f)
+      ) {
+        TimerDialContainer(
+          viewModel = viewModel,
+          timerId = activeMeta.timerId,
+          isRunning = isRunning,
+          timerColor = if (isFocusMode && isRunning) timerColor else MaterialTheme.colorScheme.primary,
+          size = 280.dp,
+          showStatusLabel = false
+        )
         Box(
-          contentAlignment = Alignment.Center,
           modifier = Modifier
-            .fluidPressScale(dialTapInteraction, pressedScale = 0.96f)
+            .size(260.dp)
             .clip(CircleShape)
             .clickable(
+              enabled = !isFocusMode,
               interactionSource = dialTapInteraction,
               indication = LocalIndication.current
             ) { showEditDurationDialog = true }
-        ) {
-          TimerDialContainer(
-            viewModel = viewModel,
-            timerId = activeMeta.timerId,
-            isRunning = false,
-            timerColor = MaterialTheme.colorScheme.primary,
-            size = 240.dp,
-            showStatusLabel = true
-          )
-        }
+        )
+      }
+    }
 
-        Spacer(modifier = Modifier.height(20.dp))
+    Spacer(modifier = Modifier.height(dialBottomGap))
 
+    // 3. Standby Quick Preset Pills Row
+    AnimatedVisibility(
+      visible = !isFocusMode,
+      enter = fadeIn(tween(durationMillis = 300, delayMillis = 50, easing = FastOutSlowInEasing)) +
+        expandVertically(
+          animationSpec = tween(durationMillis = 340, easing = FastOutSlowInEasing),
+          expandFrom = Alignment.Top
+        ),
+      exit = fadeOut(tween(durationMillis = 180, easing = FastOutSlowInEasing)) +
+        shrinkVertically(
+          animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+          shrinkTowards = Alignment.Top
+        )
+    ) {
+      Column {
         Row(
           modifier = Modifier
             .fillMaxWidth()
@@ -583,82 +579,179 @@ fun TimerScreen(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
+      }
+    }
 
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.Center,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Button(
-            onClick = { viewModel.startTimer(activeMeta.timerId) },
-            interactionSource = startBtnInteraction,
-            colors = ButtonDefaults.buttonColors(
-              containerColor = MaterialTheme.colorScheme.primary,
-              contentColor = MaterialTheme.colorScheme.onPrimary
-            ),
+    // 4. Unified Morphing Action Controls Row ([RESET] [START/PAUSE/RESUME] [+5m])
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.Center,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      AnimatedVisibility(
+        visible = isFocusMode && !isRunning,
+        enter = fadeIn(tween(260)) +
+          expandHorizontally(
+            animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+            expandFrom = Alignment.End
+          ) +
+          scaleIn(initialScale = 0.85f),
+        exit = fadeOut(tween(180)) +
+          shrinkHorizontally(
+            animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+            shrinkTowards = Alignment.End
+          ) +
+          scaleOut(targetScale = 0.85f)
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          FilledTonalButton(
+            onClick = { viewModel.resetTimer(activeMeta.timerId) },
+            interactionSource = resetBtnInteraction,
             shape = RoundedCornerShape(32.dp),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
             modifier = Modifier
               .height(60.dp)
-              .width(148.dp)
-              .fluidPulseHalo(color = MaterialTheme.colorScheme.primary, isActive = true)
-              .fluidPressScale(startBtnInteraction)
-              .testTag("timer_start_pause_btn")
+              .fluidPressScale(resetBtnInteraction)
+              .testTag("timer_reset_btn")
           ) {
-            Icon(
-              imageVector = Icons.Default.PlayArrow,
-              contentDescription = "Start",
-              modifier = Modifier.size(26.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
             Text(
-              text = "START",
+              text = "RESET",
               fontWeight = FontWeight.Bold,
-              fontSize = 16.sp
+              fontSize = 15.sp,
+              softWrap = false,
+              maxLines = 1
             )
           }
+          Spacer(modifier = Modifier.width(16.dp))
+        }
+      }
 
-          Spacer(modifier = Modifier.width(18.dp))
+      Button(
+        onClick = {
+          if (isFocusMode && isRunning) viewModel.pauseTimer(activeMeta.timerId)
+          else viewModel.startTimer(activeMeta.timerId)
+        },
+        interactionSource = primaryBtnInteraction,
+        colors = ButtonDefaults.buttonColors(
+          containerColor = primaryButtonColor,
+          contentColor = primaryButtonContentColor
+        ),
+        shape = RoundedCornerShape(32.dp),
+        modifier = Modifier
+          .height(60.dp)
+          .width(primaryButtonWidth)
+          .fluidPulseHalo(color = primaryButtonColor, isActive = !isFocusMode || isRunning)
+          .fluidPressScale(primaryBtnInteraction)
+          .testTag("timer_start_pause_btn")
+      ) {
+        val primaryLabel = when {
+          !isFocusMode -> "START"
+          isRunning -> "PAUSE"
+          else -> "RESUME"
+        }
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.Center
+        ) {
+          AnimatedVisibility(
+            visible = !isFocusMode,
+            enter = fadeIn(tween(220)) +
+              expandHorizontally(tween(260, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(150)) +
+              shrinkHorizontally(tween(220, easing = FastOutSlowInEasing))
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(
+                imageVector = Icons.Default.PlayArrow,
+                contentDescription = "Start",
+                modifier = Modifier.size(26.dp)
+              )
+              Spacer(modifier = Modifier.width(8.dp))
+            }
+          }
+          FluidAnimatedValue(targetState = primaryLabel) { labelText ->
+            Text(
+              text = labelText,
+              fontWeight = FontWeight.Bold,
+              fontSize = 16.sp,
+              softWrap = false,
+              maxLines = 1
+            )
+          }
+        }
+      }
 
-          Box(contentAlignment = Alignment.Center) {
-            Surface(
-              shape = CircleShape,
-              color = MaterialTheme.colorScheme.secondaryContainer,
-              contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-              border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
-              modifier = Modifier
-                .size(58.dp)
-                .fluidPressScale(quickAddBtnInteraction, pressedScale = 0.90f)
-                .clip(CircleShape)
-                .combinedClickable(
-                  interactionSource = quickAddBtnInteraction,
-                  indication = LocalIndication.current,
-                  onClick = { showEditQuickAddDialog = true },
-                  onLongClick = { showEditQuickAddDialog = true }
-                )
-                .testTag("timer_add_new_btn")
-            ) {
-              Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-              ) {
-                Text(
-                  text = quickAddLabel,
-                  fontFamily = RobotoMonoFontFamily,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = if (quickAddLabel.contains("\n")) 11.sp else 14.sp,
-                  lineHeight = 13.sp,
-                  textAlign = TextAlign.Center,
-                  color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(1.dp))
-                Icon(
-                  imageVector = Icons.Default.Edit,
-                  contentDescription = "Customize quick-add time",
-                  tint = MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(11.dp)
-                )
+      Spacer(modifier = Modifier.width(actionRowGap))
+
+      Surface(
+        shape = RoundedCornerShape(32.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        border = if (quickAddBorderAlpha > 0.01f) {
+          BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = quickAddBorderAlpha))
+        } else {
+          null
+        },
+        modifier = Modifier
+          .width(quickAddWidth)
+          .height(quickAddHeight)
+          .fluidPressScale(quickAddBtnInteraction, pressedScale = 0.90f)
+          .clip(RoundedCornerShape(32.dp))
+          .combinedClickable(
+            interactionSource = quickAddBtnInteraction,
+            indication = LocalIndication.current,
+            onClick = {
+              if (isFocusMode) {
+                viewModel.addTimeToTimer(activeMeta.timerId, quickAddSec.toLong())
+              } else {
+                showEditQuickAddDialog = true
               }
+            },
+            onLongClick = {
+              if (!isFocusMode) showEditQuickAddDialog = true
+            }
+          )
+          .testTag("timer_add_new_btn")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 6.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.Center
+        ) {
+          val displayQuickText = if (isFocusMode) quickAddLabel.replace("\n", " ") else quickAddLabel
+          val isMultiLineStandby = !isFocusMode && quickAddLabel.contains("\n")
+          Text(
+            text = displayQuickText,
+            fontFamily = RobotoMonoFontFamily,
+            fontWeight = FontWeight.Bold,
+            fontSize = when {
+              isFocusMode -> 15.sp
+              isMultiLineStandby -> 11.sp
+              else -> 14.sp
+            },
+            lineHeight = if (isMultiLineStandby) 13.sp else 16.sp,
+            textAlign = TextAlign.Center,
+            maxLines = if (isMultiLineStandby) 2 else 1,
+            softWrap = isMultiLineStandby,
+            color = if (isFocusMode) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface
+          )
+          AnimatedVisibility(
+            visible = !isFocusMode,
+            enter = fadeIn(tween(220)) +
+              expandVertically(tween(240, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(150)) +
+              shrinkVertically(tween(200, easing = FastOutSlowInEasing))
+          ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+              Spacer(modifier = Modifier.height(1.dp))
+              Icon(
+                imageVector = Icons.Default.Edit,
+                contentDescription = "Customize quick-add time",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(11.dp)
+              )
             }
           }
         }

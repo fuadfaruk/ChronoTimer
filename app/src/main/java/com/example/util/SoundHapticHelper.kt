@@ -7,129 +7,219 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Dispatches ToneGenerator and Vibrator calls asynchronously on a single serialized
- * background dispatcher so button presses and tab switches never block the UI thread.
+ * Dispatches ToneGenerator and Vibrator triggers inside a dedicated [CoroutineScope] backed by
+ * [Dispatchers.Default] using conflated channels so high-frequency events never block the UI thread
+ * or accumulate a backlog of stale audio/haptic IPC calls.
  */
-class SoundHapticHelper(private val context: Context) {
+class SoundHapticHelper(
+  private val context: Context,
+  dispatcher: CoroutineDispatcher = Dispatchers.Default
+) {
 
-  @OptIn(ExperimentalCoroutinesApi::class)
-  private val feedbackDispatcher = Dispatchers.Default.limitedParallelism(1)
-  private val scope = CoroutineScope(SupervisorJob() + feedbackDispatcher)
+  private sealed interface SoundCommand {
+    data object Click : SoundCommand
+    data object Lap : SoundCommand
+    data class CountdownBeep(val isFinalGo: Boolean) : SoundCommand
+  }
+
+  private sealed interface VibrationCommand {
+    data object Click : VibrationCommand
+    data object Lap : VibrationCommand
+    data object Cancel : VibrationCommand
+  }
+
+  private val scope = CoroutineScope(SupervisorJob() + dispatcher)
+  private val soundChannel = Channel<SoundCommand>(Channel.CONFLATED)
+  private val vibrationChannel = Channel<VibrationCommand>(Channel.CONFLATED)
+
+  private val isReleased = AtomicBoolean(false)
+  private val toneLock = Any()
+  private val vibratorLock = Any()
+  private val alertLock = Any()
 
   @Volatile
   private var toneGenerator: ToneGenerator? = null
-  private var alertJob: Job? = null
 
-  private val vibrator: Vibrator? by lazy {
-    try {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-        vibratorManager?.defaultVibrator
-      } else {
-        @Suppress("DEPRECATION")
-        context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-      }
-    } catch (_: Exception) {
-      null
-    }
-  }
+  @Volatile
+  private var cachedVibrator: Vibrator? = null
+
+  @Volatile
+  private var vibratorResolved = false
+
+  private var alertJob: Job? = null
 
   init {
     scope.launch {
-      try {
-        toneGenerator = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
-      } catch (_: Exception) {
-        // Ignored if device audio stream is unavailable
+      ensureToneGenerator()
+    }
+    scope.launch {
+      for (command in soundChannel) {
+        if (isReleased.get()) break
+        when (command) {
+          SoundCommand.Click -> playToneInternal(ToneGenerator.TONE_PROP_BEEP, 35)
+          SoundCommand.Lap -> playToneInternal(ToneGenerator.TONE_PROP_ACK, 50)
+          is SoundCommand.CountdownBeep -> {
+            val tone = if (command.isFinalGo) {
+              ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD
+            } else {
+              ToneGenerator.TONE_PROP_BEEP
+            }
+            val duration = if (command.isFinalGo) 250 else 70
+            playToneInternal(tone, duration)
+          }
+        }
       }
+    }
+    scope.launch {
+      for (command in vibrationChannel) {
+        if (isReleased.get()) break
+        when (command) {
+          VibrationCommand.Click -> vibrateOneShotInternal(25L)
+          VibrationCommand.Lap -> vibrateWaveformInternal(longArrayOf(0, 30, 40, 30))
+          VibrationCommand.Cancel -> cancelVibrationInternal()
+        }
+      }
+    }
+  }
+
+  private fun ensureToneGenerator(): ToneGenerator? {
+    if (isReleased.get()) return null
+    toneGenerator?.let { return it }
+    return synchronized(toneLock) {
+      if (isReleased.get()) return@synchronized null
+      toneGenerator ?: try {
+        ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85).also {
+          toneGenerator = it
+        }
+      } catch (_: Exception) {
+        null
+      }
+    }
+  }
+
+  private fun getVibrator(): Vibrator? {
+    if (vibratorResolved) return cachedVibrator
+    return synchronized(vibratorLock) {
+      if (!vibratorResolved) {
+        cachedVibrator = try {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager =
+              context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            vibratorManager?.defaultVibrator
+          } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+          }
+        } catch (_: Exception) {
+          null
+        }
+        vibratorResolved = true
+      }
+      cachedVibrator
+    }
+  }
+
+  private fun playToneInternal(toneType: Int, durationMs: Int) {
+    if (isReleased.get()) return
+    synchronized(toneLock) {
+      if (isReleased.get()) return
+      try {
+        val generator = toneGenerator ?: ensureToneGenerator()
+        generator?.startTone(toneType, durationMs)
+      } catch (_: Exception) {
+      }
+    }
+  }
+
+  private fun vibrateOneShotInternal(durationMs: Long) {
+    if (isReleased.get()) return
+    try {
+      val vib = getVibrator() ?: return
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        vib.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+      } else {
+        @Suppress("DEPRECATION")
+        vib.vibrate(durationMs)
+      }
+    } catch (_: Exception) {
+    }
+  }
+
+  private fun vibrateWaveformInternal(timings: LongArray) {
+    if (isReleased.get()) return
+    try {
+      val vib = getVibrator() ?: return
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        vib.vibrate(VibrationEffect.createWaveform(timings, -1))
+      } else {
+        @Suppress("DEPRECATION")
+        vib.vibrate(timings, -1)
+      }
+    } catch (_: Exception) {
+    }
+  }
+
+  private fun cancelVibrationInternal() {
+    try {
+      getVibrator()?.cancel()
+    } catch (_: Exception) {
     }
   }
 
   fun playClickSound(soundEnabled: Boolean) {
-    if (!soundEnabled) return
-    scope.launch {
-      try {
-        toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP, 35)
-      } catch (_: Exception) {}
-    }
+    if (!soundEnabled || isReleased.get()) return
+    soundChannel.trySend(SoundCommand.Click)
   }
 
   fun playLapSound(soundEnabled: Boolean) {
-    if (!soundEnabled) return
-    scope.launch {
-      try {
-        toneGenerator?.startTone(ToneGenerator.TONE_PROP_ACK, 50)
-      } catch (_: Exception) {}
-    }
+    if (!soundEnabled || isReleased.get()) return
+    soundChannel.trySend(SoundCommand.Lap)
   }
 
   fun playCountdownBeep(soundEnabled: Boolean, isFinalGo: Boolean = false) {
-    if (!soundEnabled) return
-    scope.launch {
-      try {
-        val tone = if (isFinalGo) ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD else ToneGenerator.TONE_PROP_BEEP
-        val duration = if (isFinalGo) 250 else 70
-        toneGenerator?.startTone(tone, duration)
-      } catch (_: Exception) {}
-    }
+    if (!soundEnabled || isReleased.get()) return
+    soundChannel.trySend(SoundCommand.CountdownBeep(isFinalGo))
   }
 
   fun vibrateClick(vibrationEnabled: Boolean) {
-    if (!vibrationEnabled) return
-    scope.launch {
-      try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-          vibrator?.vibrate(VibrationEffect.createOneShot(25, VibrationEffect.DEFAULT_AMPLITUDE))
-        } else {
-          @Suppress("DEPRECATION")
-          vibrator?.vibrate(25)
-        }
-      } catch (_: Exception) {}
-    }
+    if (!vibrationEnabled || isReleased.get()) return
+    vibrationChannel.trySend(VibrationCommand.Click)
   }
 
   fun vibrateLap(vibrationEnabled: Boolean) {
-    if (!vibrationEnabled) return
-    scope.launch {
-      try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-          vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 30, 40, 30), -1))
-        } else {
-          @Suppress("DEPRECATION")
-          vibrator?.vibrate(longArrayOf(0, 30, 40, 30), -1)
-        }
-      } catch (_: Exception) {}
-    }
+    if (!vibrationEnabled || isReleased.get()) return
+    vibrationChannel.trySend(VibrationCommand.Lap)
   }
 
   fun startAlarmAlert(soundEnabled: Boolean, vibrationEnabled: Boolean) {
-    scope.launch {
+    if (isReleased.get()) return
+    synchronized(alertLock) {
       alertJob?.cancel()
+      if (!soundEnabled && !vibrationEnabled) {
+        alertJob = null
+        return
+      }
       alertJob = scope.launch {
         repeat(10) {
+          if (!isActive || isReleased.get()) return@launch
           if (soundEnabled) {
-            try {
-              toneGenerator?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 400)
-            } catch (_: Exception) {}
+            playToneInternal(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 400)
           }
           if (vibrationEnabled) {
-            try {
-              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200), -1))
-              } else {
-                @Suppress("DEPRECATION")
-                vibrator?.vibrate(longArrayOf(0, 200, 100, 200), -1)
-              }
-            } catch (_: Exception) {}
+            vibrateWaveformInternal(longArrayOf(0, 200, 100, 200))
           }
           delay(700)
         }
@@ -138,27 +228,34 @@ class SoundHapticHelper(private val context: Context) {
   }
 
   fun stopAlarmAlert() {
-    scope.launch {
+    synchronized(alertLock) {
       alertJob?.cancel()
       alertJob = null
-      try {
-        vibrator?.cancel()
-      } catch (_: Exception) {}
+    }
+    if (!isReleased.get()) {
+      vibrationChannel.trySend(VibrationCommand.Cancel)
     }
   }
 
   fun release() {
-    scope.launch {
+    if (!isReleased.compareAndSet(false, true)) return
+    synchronized(alertLock) {
       alertJob?.cancel()
       alertJob = null
-      try {
-        vibrator?.cancel()
-      } catch (_: Exception) {}
-      try {
-        toneGenerator?.release()
-      } catch (_: Exception) {}
-      toneGenerator = null
+    }
+    soundChannel.close()
+    vibrationChannel.close()
+    scope.launch {
+      cancelVibrationInternal()
+      synchronized(toneLock) {
+        try {
+          toneGenerator?.release()
+        } catch (_: Exception) {
+        }
+        toneGenerator = null
+      }
       scope.cancel()
     }
   }
 }
+

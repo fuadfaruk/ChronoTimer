@@ -109,6 +109,8 @@ class PresetRepository(context: Context) {
   private val KEY_WHITE_NOISE_ENABLED = "setting_white_noise_enabled"
   private val KEY_WHITE_NOISE_PROFILE = "setting_white_noise_profile"
   private val KEY_WHITE_NOISE_VOLUME = "setting_white_noise_volume"
+  private val KEY_CUSTOM_AUDIO_URI = "setting_custom_audio_uri"
+  private val KEY_CUSTOM_AUDIO_NAME = "setting_custom_audio_name"
   private val KEY_QUICK_ADD_SECONDS = "setting_quick_add_seconds"
   private val KEY_THEME_MODE = "setting_theme_mode"
   private val KEY_DYNAMIC_COLOR = "setting_dynamic_color"
@@ -130,6 +132,24 @@ class PresetRepository(context: Context) {
 
   fun getWhiteNoiseVolume(): Float = prefs.getFloat(KEY_WHITE_NOISE_VOLUME, 0.7f)
   fun setWhiteNoiseVolume(volume: Float) = prefs.edit().putFloat(KEY_WHITE_NOISE_VOLUME, volume).apply()
+
+  fun getCustomAudioUri(): String? = prefs.getString(KEY_CUSTOM_AUDIO_URI, null)
+  fun setCustomAudioUri(uri: String?) {
+    if (uri.isNullOrBlank()) {
+      prefs.edit().remove(KEY_CUSTOM_AUDIO_URI).apply()
+    } else {
+      prefs.edit().putString(KEY_CUSTOM_AUDIO_URI, uri).apply()
+    }
+  }
+
+  fun getCustomAudioName(): String? = prefs.getString(KEY_CUSTOM_AUDIO_NAME, null)
+  fun setCustomAudioName(name: String?) {
+    if (name.isNullOrBlank()) {
+      prefs.edit().remove(KEY_CUSTOM_AUDIO_NAME).apply()
+    } else {
+      prefs.edit().putString(KEY_CUSTOM_AUDIO_NAME, name).apply()
+    }
+  }
 
   fun getQuickAddSeconds(): Int = prefs.getInt(KEY_QUICK_ADD_SECONDS, 300).coerceAtLeast(1)
   fun setQuickAddSeconds(seconds: Int) = prefs.edit().putInt(KEY_QUICK_ADD_SECONDS, seconds.coerceAtLeast(1)).apply()

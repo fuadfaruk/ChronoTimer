@@ -1,7 +1,10 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Intent
+import android.net.Uri
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +18,7 @@ import com.example.model.StopwatchStats
 import com.example.model.TimerItem
 import com.example.model.TimerPreset
 import com.example.ui.theme.AppThemeMode
+import com.example.util.CustomAudioPlayer
 import com.example.util.NoiseProfile
 import com.example.util.SoundHapticHelper
 import com.example.util.VoiceMaskingNoiseGenerator
@@ -99,6 +103,9 @@ data class SettingsState(
   val whiteNoiseVolume: Float = 0.7f,
   val isWhiteNoisePlaying: Boolean = false,
   val previewingProfile: NoiseProfile? = null,
+  val customAudioUri: String? = null,
+  val customAudioName: String? = null,
+  val customAudioError: String? = null,
   val quickAddSeconds: Int = 300
 )
 
@@ -126,6 +133,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   private val repository = PresetRepository(application)
   val soundHapticHelper = SoundHapticHelper(application)
   val noiseGenerator = VoiceMaskingNoiseGenerator()
+  val customAudioPlayer = CustomAudioPlayer(application)
   private var isPreviewActive = false
   private var previewProfile: NoiseProfile? = null
 
@@ -201,6 +209,8 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       },
       whiteNoiseVolume = repository.getWhiteNoiseVolume(),
       isWhiteNoisePlaying = false,
+      customAudioUri = repository.getCustomAudioUri(),
+      customAudioName = repository.getCustomAudioName(),
       quickAddSeconds = repository.getQuickAddSeconds()
     )
   )
@@ -460,6 +470,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     soundHapticHelper.playClickSound(_settings.value.soundEnabled)
     soundHapticHelper.vibrateClick(_settings.value.vibrationEnabled)
 
+    var shouldStopAlarm = false
     _timerState.update { state ->
       val updated = state.timers.map { timer ->
         if (timer.id == timerId) {
@@ -474,12 +485,15 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
         }
       }
       val ringing = if (state.ringingTimerId == timerId) {
-        soundHapticHelper.stopAlarmAlert()
+        shouldStopAlarm = true
         null
       } else {
         state.ringingTimerId
       }
       state.copy(timers = updated, ringingTimerId = ringing)
+    }
+    if (shouldStopAlarm) {
+      soundHapticHelper.stopAlarmAlert()
     }
     syncWhiteNoise()
   }
@@ -1026,7 +1040,60 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       targetProfile = _settings.value.whiteNoiseProfile
     }
 
-    if (shouldPlay) {
+    if (shouldPlay && targetProfile == NoiseProfile.CUSTOM_AUDIO) {
+      if (noiseGenerator.isPlaying) {
+        noiseGenerator.stop()
+      }
+      val uriStr = _settings.value.customAudioUri
+      if (!uriStr.isNullOrBlank()) {
+        val parsedUri = Uri.parse(uriStr)
+        if (!customAudioPlayer.isPlaying || customAudioPlayer.currentUriString != uriStr) {
+          customAudioPlayer.start(
+            uri = parsedUri,
+            volume = _settings.value.whiteNoiseVolume,
+            onError = { message ->
+              isPreviewActive = false
+              previewProfile = null
+              _settings.update {
+                it.copy(
+                  isWhiteNoisePlaying = false,
+                  previewingProfile = null,
+                  customAudioError = message
+                )
+              }
+            }
+          )
+        } else {
+          customAudioPlayer.updateVolume(_settings.value.whiteNoiseVolume)
+        }
+        val currentSettings = _settings.value
+        if (!currentSettings.isWhiteNoisePlaying ||
+          currentSettings.previewingProfile != activePreview ||
+          currentSettings.customAudioError != null
+        ) {
+          _settings.update {
+            it.copy(
+              isWhiteNoisePlaying = true,
+              previewingProfile = activePreview,
+              customAudioError = null
+            )
+          }
+        }
+      } else {
+        if (customAudioPlayer.isPlaying) {
+          customAudioPlayer.stop()
+        }
+        isPreviewActive = false
+        previewProfile = null
+        val currentSettings = _settings.value
+        if (currentSettings.isWhiteNoisePlaying || currentSettings.previewingProfile != null) {
+          _settings.update { it.copy(isWhiteNoisePlaying = false, previewingProfile = null) }
+        }
+      }
+    } else if (shouldPlay) {
+      if (customAudioPlayer.isPlaying) {
+        customAudioPlayer.stop()
+      }
       if (!noiseGenerator.isPlaying) {
         noiseGenerator.start(targetProfile, _settings.value.whiteNoiseVolume)
       } else {
@@ -1043,6 +1110,9 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       if (noiseGenerator.isPlaying) {
         noiseGenerator.stop()
       }
+      if (customAudioPlayer.isPlaying) {
+        customAudioPlayer.stop()
+      }
       val currentSettings = _settings.value
       if (currentSettings.isWhiteNoisePlaying || currentSettings.previewingProfile != null) {
         _settings.update { it.copy(isWhiteNoisePlaying = false, previewingProfile = null) }
@@ -1058,10 +1128,109 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   }
 
   fun setWhiteNoiseProfile(profile: NoiseProfile) {
-    _settings.update { it.copy(whiteNoiseProfile = profile) }
+    _settings.update { it.copy(whiteNoiseProfile = profile, customAudioError = null) }
     repository.setWhiteNoiseProfile(profile.name)
-    noiseGenerator.updateProfile(profile)
+    if (profile != NoiseProfile.CUSTOM_AUDIO) {
+      noiseGenerator.updateProfile(profile)
+    }
     syncWhiteNoise()
+  }
+
+  fun setCustomAudioUri(uri: Uri, selectAsDefaultProfile: Boolean = true) {
+    val appContext = getApplication<Application>()
+    try {
+      appContext.contentResolver.takePersistableUriPermission(
+        uri,
+        Intent.FLAG_GRANT_READ_URI_PERMISSION
+      )
+    } catch (_: SecurityException) {
+    } catch (_: Exception) {
+    }
+
+    val uriString = uri.toString()
+    val fallbackName = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "Custom Audio"
+    repository.setCustomAudioUri(uriString)
+    repository.setCustomAudioName(fallbackName)
+
+    if (selectAsDefaultProfile) {
+      repository.setWhiteNoiseProfile(NoiseProfile.CUSTOM_AUDIO.name)
+    }
+
+    _settings.update {
+      it.copy(
+        customAudioUri = uriString,
+        customAudioName = fallbackName,
+        customAudioError = null,
+        whiteNoiseProfile = if (selectAsDefaultProfile) NoiseProfile.CUSTOM_AUDIO else it.whiteNoiseProfile
+      )
+    }
+
+    viewModelScope.launch(Dispatchers.IO) {
+      val resolvedName = resolveAudioDisplayName(appContext, uri) ?: fallbackName
+      if (resolvedName != fallbackName) {
+        repository.setCustomAudioName(resolvedName)
+        _settings.update { state ->
+          if (state.customAudioUri == uriString) {
+            state.copy(customAudioName = resolvedName)
+          } else {
+            state
+          }
+        }
+      }
+    }
+
+    if (isPreviewActive && selectAsDefaultProfile) {
+      previewProfile = NoiseProfile.CUSTOM_AUDIO
+    }
+    syncWhiteNoise()
+  }
+
+  fun clearCustomAudio() {
+    customAudioPlayer.stop()
+    repository.setCustomAudioUri(null)
+    repository.setCustomAudioName(null)
+    val nextProfile = if (_settings.value.whiteNoiseProfile == NoiseProfile.CUSTOM_AUDIO) {
+      NoiseProfile.VOICE_MASKING
+    } else {
+      _settings.value.whiteNoiseProfile
+    }
+    if (nextProfile != _settings.value.whiteNoiseProfile) {
+      repository.setWhiteNoiseProfile(nextProfile.name)
+    }
+    if (previewProfile == NoiseProfile.CUSTOM_AUDIO) {
+      isPreviewActive = false
+      previewProfile = null
+    }
+    _settings.update {
+      it.copy(
+        customAudioUri = null,
+        customAudioName = null,
+        customAudioError = null,
+        whiteNoiseProfile = nextProfile
+      )
+    }
+    syncWhiteNoise()
+  }
+
+  private fun resolveAudioDisplayName(context: Application, uri: Uri): String? {
+    return try {
+      context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+      )?.use { cursor ->
+        if (cursor.moveToFirst()) {
+          val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+          if (index >= 0) cursor.getString(index)?.takeIf { it.isNotBlank() } else null
+        } else {
+          null
+        }
+      }
+    } catch (_: Exception) {
+      null
+    }
   }
 
   fun setWhiteNoiseVolume(volume: Float) {
@@ -1069,6 +1238,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     _settings.update { it.copy(whiteNoiseVolume = clamped) }
     repository.setWhiteNoiseVolume(clamped)
     noiseGenerator.updateVolume(clamped)
+    customAudioPlayer.updateVolume(clamped)
   }
 
   fun toggleWhiteNoisePreview() {
@@ -1076,8 +1246,12 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       isPreviewActive = false
       previewProfile = null
     } else {
+      val profile = _settings.value.whiteNoiseProfile
+      if (profile == NoiseProfile.CUSTOM_AUDIO && _settings.value.customAudioUri.isNullOrBlank()) {
+        return
+      }
       isPreviewActive = true
-      previewProfile = _settings.value.whiteNoiseProfile
+      previewProfile = profile
     }
     syncWhiteNoise()
   }
@@ -1087,6 +1261,9 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       isPreviewActive = false
       previewProfile = null
     } else {
+      if (profile == NoiseProfile.CUSTOM_AUDIO && _settings.value.customAudioUri.isNullOrBlank()) {
+        return
+      }
       isPreviewActive = true
       previewProfile = profile
     }
@@ -1108,5 +1285,6 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     intervalJob?.cancel()
     soundHapticHelper.release()
     noiseGenerator.stop()
+    customAudioPlayer.release()
   }
 }
