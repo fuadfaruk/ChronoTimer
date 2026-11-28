@@ -440,12 +440,13 @@ fun CircularProgressTimerArc(
   timerColor: Color = MaterialTheme.colorScheme.primary,
   modifier: Modifier = Modifier,
   size: Dp = 250.dp,
-  showStatusLabel: Boolean = true
+  showStatusLabel: Boolean = true,
+  statusLabel: String = "FOCUSING"
 ) {
   val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
   val surfaceColor = MaterialTheme.colorScheme.surface
   val outlineColor = MaterialTheme.colorScheme.outline
-  val activeLabelColor = MaterialTheme.colorScheme.secondary
+  val activeLabelColor = animatedStatusLabelColor(timerColor)
   val tipHighlightColor = MaterialTheme.colorScheme.onPrimary
   val displayTime = TimeFormatter.formatTimer(remainingMillis)
 
@@ -761,7 +762,7 @@ fun CircularProgressTimerArc(
           fontSize = if (displayTime.length > 5) 33.sp else 42.sp,
           color = MaterialTheme.colorScheme.onBackground
         )
-        if (isRunning && showStatusLabel) {
+        if (isRunning && showStatusLabel && statusLabel.isNotBlank()) {
           Spacer(modifier = Modifier.height(4.dp))
           Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -779,7 +780,7 @@ fun CircularProgressTimerArc(
                 .background(activeLabelColor)
             )
             Text(
-              text = "FOCUSING",
+              text = statusLabel,
               style = MaterialTheme.typography.labelSmall,
               fontWeight = FontWeight.Bold,
               color = activeLabelColor,
@@ -790,6 +791,15 @@ fun CircularProgressTimerArc(
       }
     }
   }
+}
+
+@Composable
+private fun animatedStatusLabelColor(target: Color): Color {
+  return animateColorAsState(
+    targetValue = target,
+    animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+    label = "dial_status_label_color"
+  ).value
 }
 
 @Composable

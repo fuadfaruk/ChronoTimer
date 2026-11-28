@@ -218,13 +218,25 @@ class PresetRepository(context: Context) {
           } catch (_: Exception) {
             null
           }
+          val stepCustomUri = if (stepObj.isNull("customAudioUri")) {
+            null
+          } else {
+            stepObj.optString("customAudioUri", "").ifBlank { null }
+          }
+          val stepCustomName = if (stepObj.isNull("customAudioName")) {
+            null
+          } else {
+            stepObj.optString("customAudioName", "").ifBlank { null }
+          }
           steps.add(
             IntervalStep(
               id = stepObj.optString("id", "step_$j"),
               name = stepObj.optString("name", "Interval ${j + 1}"),
               durationSeconds = stepObj.optInt("durationSeconds", 60).coerceAtLeast(1),
               backgroundSound = sound,
-              colorHex = stepObj.optLong("colorHex", 0xFF00E676)
+              colorHex = stepObj.optLong("colorHex", 0xFF00E676),
+              customAudioUri = stepCustomUri,
+              customAudioName = stepCustomName
             )
           )
         }
@@ -270,6 +282,16 @@ class PresetRepository(context: Context) {
             stepObj.put("backgroundSound", JSONObject.NULL)
           }
           stepObj.put("colorHex", step.colorHex)
+          if (!step.customAudioUri.isNullOrBlank()) {
+            stepObj.put("customAudioUri", step.customAudioUri)
+          } else {
+            stepObj.put("customAudioUri", JSONObject.NULL)
+          }
+          if (!step.customAudioName.isNullOrBlank()) {
+            stepObj.put("customAudioName", step.customAudioName)
+          } else {
+            stepObj.put("customAudioName", JSONObject.NULL)
+          }
           stepsArray.put(stepObj)
         }
         obj.put("steps", stepsArray)

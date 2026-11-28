@@ -69,8 +69,8 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -115,45 +115,60 @@ fun CustomIntervalPresetEditorDialog(
   onSave: (IntervalConfig) -> Unit,
   onDelete: ((String) -> Unit)? = null
 ) {
-  val isEditing = editingPreset != null && editingPreset.isCustom
+  val isEditingExistingCustom = editingPreset != null && editingPreset.isCustom
+  val isCustomizingStandard = editingPreset != null && !editingPreset.isCustom
   var presetName by remember(editingPreset) {
     mutableStateOf(
-      if (isEditing) editingPreset!!.name else ""
+      when {
+        isEditingExistingCustom -> editingPreset!!.name
+        isCustomizingStandard -> "${editingPreset!!.name.substringBefore(" (")} Custom"
+        else -> ""
+      }
     )
   }
   var repeatCount by remember(editingPreset) {
     mutableIntStateOf(
-      if (isEditing) editingPreset!!.repeatCount.coerceAtLeast(1) else 1
+      when {
+        isEditingExistingCustom -> editingPreset!!.repeatCount.coerceAtLeast(1)
+        isCustomizingStandard -> editingPreset!!.sets.coerceAtLeast(1)
+        else -> 1
+      }
     )
   }
 
   val steps = remember(editingPreset) {
     mutableStateListOf<IntervalStep>().apply {
-      if (isEditing && editingPreset!!.steps.isNotEmpty()) {
-        addAll(editingPreset.steps)
-      } else {
-        add(
-          IntervalStep(
-            name = "Deep Focus",
-            durationSeconds = 25 * 60,
-            backgroundSound = NoiseProfile.VOICE_MASKING,
-            colorHex = 0xFF00E676L
+      when {
+        isEditingExistingCustom && editingPreset!!.steps.isNotEmpty() -> {
+          addAll(editingPreset.steps)
+        }
+        isCustomizingStandard -> {
+          addAll(editingPreset!!.toEditableSteps())
+        }
+        else -> {
+          add(
+            IntervalStep(
+              name = "Deep Focus",
+              durationSeconds = 25 * 60,
+              backgroundSound = NoiseProfile.VOICE_MASKING,
+              colorHex = 0xFF00E676L
+            )
           )
-        )
-        add(
-          IntervalStep(
-            name = "Short Break",
-            durationSeconds = 5 * 60,
-            backgroundSound = null,
-            colorHex = 0xFF00E5FFL
+          add(
+            IntervalStep(
+              name = "Short Break",
+              durationSeconds = 5 * 60,
+              backgroundSound = null,
+              colorHex = 0xFF00E5FFL
+            )
           )
-        )
+        }
       }
     }
   }
 
   var pickingSoundForIndex by remember { mutableStateOf<Int?>(null) }
-  val settings by viewModel.settings.collectAsState()
+  val settings by viewModel.settings.collectAsStateWithLifecycle()
   val listState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
 
@@ -184,7 +199,11 @@ fun CustomIntervalPresetEditorDialog(
           TopAppBar(
             title = {
               Text(
-                text = if (isEditing) "Edit Interval Preset" else "New Interval Preset",
+                text = when {
+                  isEditingExistingCustom -> "Edit Interval Preset"
+                  isCustomizingStandard -> "Customize Interval Flow"
+                  else -> "New Interval Preset"
+                },
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp
               )
@@ -204,7 +223,7 @@ fun CustomIntervalPresetEditorDialog(
               }
             },
             actions = {
-              if (isEditing && onDelete != null) {
+              if (isEditingExistingCustom && onDelete != null) {
                 IconButton(
                   onClick = {
                     viewModel.stopWhiteNoisePreview()
@@ -229,7 +248,7 @@ fun CustomIntervalPresetEditorDialog(
                     )
                   }
                   val finalPreset = IntervalConfig(
-                    id = if (isEditing) editingPreset!!.id else UUID.randomUUID().toString(),
+                    id = if (isEditingExistingCustom) editingPreset!!.id else UUID.randomUUID().toString(),
                     name = presetName.trim().ifBlank { "Custom Flow" },
                     warmupSec = 0,
                     workSec = sanitizedSteps.first().durationSeconds,
@@ -463,12 +482,41 @@ fun CustomIntervalPresetEditorDialog(
   // Per-Interval Sound Picker Dialog
   val activeIndex = pickingSoundForIndex
   if (activeIndex != null && activeIndex in steps.indices) {
+    val activeStep = steps[activeIndex]
     IntervalSoundPickerDialog(
       viewModel = viewModel,
-      intervalName = steps[activeIndex].name.ifBlank { "Interval ${activeIndex + 1}" },
-      selectedSound = steps[activeIndex].backgroundSound,
-      onSelect = { chosenSound ->
-        steps[activeIndex] = steps[activeIndex].copy(backgroundSound = chosenSound)
+      intervalName = activeStep.name.ifBlank { "Interval ${activeIndex + 1}" },
+      selectedSound = activeStep.backgroundSound,
+      selectedCustomAudioUri = activeStep.customAudioUri,
+      selectedCustomAudioName = activeStep.customAudioName,
+      onSelect = { chosenSound, customUri, customName ->
+        val idx = steps.indexOfFirst { it.id == activeStep.id }
+        if (idx != -1) {
+          steps[idx] = if (chosenSound == NoiseProfile.CUSTOM_AUDIO) {
+            steps[idx].copy(
+              backgroundSound = chosenSound,
+              customAudioUri = customUri ?: steps[idx].customAudioUri,
+              customAudioName = customName ?: steps[idx].customAudioName
+            )
+          } else {
+            steps[idx].copy(backgroundSound = chosenSound)
+          }
+        }
+        viewModel.stopWhiteNoisePreview()
+        pickingSoundForIndex = null
+      },
+      onPickCustomAudioUri = { uri ->
+        val stepId = activeStep.id
+        viewModel.takeAudioPermissionAndResolveName(uri) { uriStr, displayName ->
+          val idx = steps.indexOfFirst { it.id == stepId }
+          if (idx != -1) {
+            steps[idx] = steps[idx].copy(
+              backgroundSound = NoiseProfile.CUSTOM_AUDIO,
+              customAudioUri = uriStr,
+              customAudioName = displayName
+            )
+          }
+        }
         viewModel.stopWhiteNoisePreview()
         pickingSoundForIndex = null
       },
@@ -515,57 +563,24 @@ private fun IntervalStepEditorCard(
       modifier = Modifier.padding(14.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-      // Header Row: Step # + Color Picker + Reorder + Delete
+      // Header Row: Step # + Reorder + Delete (full 48dp touch targets)
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Box(
+          modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(accentColor.copy(alpha = 0.16f))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
         ) {
-          Box(
-            modifier = Modifier
-              .clip(RoundedCornerShape(8.dp))
-              .background(accentColor.copy(alpha = 0.16f))
-              .padding(horizontal = 8.dp, vertical = 3.dp)
-          ) {
-            Text(
-              text = "STEP ${index + 1}",
-              style = MaterialTheme.typography.labelSmall,
-              fontWeight = FontWeight.Bold,
-              color = accentColor
-            )
-          }
-
-          // Color selector dots
-          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            stepAccentPalette.forEach { colorLong ->
-              val isColorSelected = step.colorHex == colorLong
-              val dotColor = resolveThemeAccentColor(colorLong, colorScheme)
-              val dotSize by animateDpAsState(
-                targetValue = if (isColorSelected) 20.dp else 16.dp,
-                animationSpec = spring(
-                  dampingRatio = Spring.DampingRatioMediumBouncy,
-                  stiffness = Spring.StiffnessMedium
-                ),
-                label = "step_dot_size"
-              )
-              Box(
-                modifier = Modifier
-                  .size(dotSize)
-                  .clip(CircleShape)
-                  .background(dotColor)
-                  .border(
-                    width = if (isColorSelected) 2.dp else 0.dp,
-                    color = if (isColorSelected) MaterialTheme.colorScheme.onBackground else Color.Transparent,
-                    shape = CircleShape
-                  )
-                  .clickable { onStepChange(step.copy(colorHex = colorLong)) }
-              )
-            }
-          }
+          Text(
+            text = "STEP ${index + 1}",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = accentColor
+          )
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -573,7 +588,7 @@ private fun IntervalStepEditorCard(
             IconButton(
               onClick = { onMoveUp?.invoke() },
               enabled = onMoveUp != null,
-              modifier = Modifier.size(36.dp)
+              modifier = Modifier.minimumInteractiveComponentSize()
             ) {
               Icon(
                 imageVector = Icons.Default.ArrowUpward,
@@ -585,7 +600,7 @@ private fun IntervalStepEditorCard(
             IconButton(
               onClick = { onMoveDown?.invoke() },
               enabled = onMoveDown != null,
-              modifier = Modifier.size(36.dp)
+              modifier = Modifier.minimumInteractiveComponentSize()
             ) {
               Icon(
                 imageVector = Icons.Default.ArrowDownward,
@@ -599,7 +614,7 @@ private fun IntervalStepEditorCard(
             IconButton(
               onClick = onDelete,
               modifier = Modifier
-                .size(36.dp)
+                .minimumInteractiveComponentSize()
                 .testTag("interval_step_delete_$index")
             ) {
               Icon(
@@ -609,6 +624,52 @@ private fun IntervalStepEditorCard(
                 tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f)
               )
             }
+          }
+        }
+      }
+
+      // Color selector row with accessible touch targets
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+      ) {
+        Text(
+          text = "Color",
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          fontWeight = FontWeight.SemiBold,
+          modifier = Modifier.padding(end = 6.dp)
+        )
+        stepAccentPalette.forEach { colorLong ->
+          val isColorSelected = step.colorHex == colorLong
+          val dotColor = resolveThemeAccentColor(colorLong, colorScheme)
+          val dotSize by animateDpAsState(
+            targetValue = if (isColorSelected) 22.dp else 18.dp,
+            animationSpec = spring(
+              dampingRatio = Spring.DampingRatioMediumBouncy,
+              stiffness = Spring.StiffnessMedium
+            ),
+            label = "step_dot_size"
+          )
+          Box(
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .clip(CircleShape)
+              .clickable { onStepChange(step.copy(colorHex = colorLong)) },
+            contentAlignment = Alignment.Center
+          ) {
+            Box(
+              modifier = Modifier
+                .size(dotSize)
+                .clip(CircleShape)
+                .background(dotColor)
+                .border(
+                  width = if (isColorSelected) 2.dp else 0.dp,
+                  color = if (isColorSelected) MaterialTheme.colorScheme.onBackground else Color.Transparent,
+                  shape = CircleShape
+                )
+            )
           }
         }
       }
@@ -627,6 +688,7 @@ private fun IntervalStepEditorCard(
       )
 
       // Duration Steppers (Minutes & Seconds)
+      val maxStepSeconds = 180 * 60 + 59
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -641,7 +703,8 @@ private fun IntervalStepEditorCard(
           },
           onIncrement = {
             val newMins = (mins + 1).coerceAtMost(180)
-            onStepChange(step.copy(durationSeconds = newMins * 60 + secs))
+            val total = (newMins * 60 + secs).coerceAtMost(maxStepSeconds)
+            onStepChange(step.copy(durationSeconds = total))
           },
           modifier = Modifier.weight(1f)
         )
@@ -654,12 +717,7 @@ private fun IntervalStepEditorCard(
             onStepChange(step.copy(durationSeconds = total))
           },
           onIncrement = {
-            val newSecs = secs + 5
-            val total = if (newSecs >= 60) {
-              (mins + 1).coerceAtMost(180) * 60
-            } else {
-              mins * 60 + newSecs
-            }
+            val total = (step.durationSeconds + 5).coerceAtMost(maxStepSeconds)
             onStepChange(step.copy(durationSeconds = total))
           },
           modifier = Modifier.weight(1f)
@@ -750,10 +808,11 @@ private fun IntervalStepEditorCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
               )
+              val effectiveCustomName = step.customAudioName ?: customAudioName
               Text(
                 text = when {
-                  step.backgroundSound == NoiseProfile.CUSTOM_AUDIO && !customAudioName.isNullOrBlank() ->
-                    "Custom: $customAudioName"
+                  step.backgroundSound == NoiseProfile.CUSTOM_AUDIO && !effectiveCustomName.isNullOrBlank() ->
+                    "Custom: $effectiveCustomName"
                   step.backgroundSound != null -> step.backgroundSound.displayName
                   else -> "Silent (No Background Sound)"
                 },
@@ -841,11 +900,8 @@ private fun SmallStepIconButton(
   Box(
     modifier = Modifier
       .minimumInteractiveComponentSize()
-      .size(34.dp)
       .fluidPressScale(interactionSource, pressedScale = 0.86f)
       .clip(CircleShape)
-      .background(MaterialTheme.colorScheme.surface)
-      .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), CircleShape)
       .clickable(
         interactionSource = interactionSource,
         indication = LocalIndication.current,
@@ -853,12 +909,21 @@ private fun SmallStepIconButton(
       ),
     contentAlignment = Alignment.Center
   ) {
-    Icon(
-      imageVector = icon,
-      contentDescription = contentDescription,
-      tint = MaterialTheme.colorScheme.primary,
-      modifier = Modifier.size(16.dp)
-    )
+    Box(
+      modifier = Modifier
+        .size(34.dp)
+        .clip(CircleShape)
+        .background(MaterialTheme.colorScheme.surface)
+        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), CircleShape),
+      contentAlignment = Alignment.Center
+    ) {
+      Icon(
+        imageVector = icon,
+        contentDescription = contentDescription,
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(16.dp)
+      )
+    }
   }
 }
 
@@ -867,16 +932,22 @@ fun IntervalSoundPickerDialog(
   viewModel: ChronoViewModel,
   intervalName: String,
   selectedSound: NoiseProfile?,
-  onSelect: (NoiseProfile?) -> Unit,
+  selectedCustomAudioUri: String? = null,
+  selectedCustomAudioName: String? = null,
+  onSelect: (sound: NoiseProfile?, customUri: String?, customName: String?) -> Unit,
+  onPickCustomAudioUri: (android.net.Uri) -> Unit,
   onDismiss: () -> Unit
 ) {
-  val settings by viewModel.settings.collectAsState()
+  val settings by viewModel.settings.collectAsStateWithLifecycle()
+  val effectiveCustomUri = selectedCustomAudioUri ?: settings.customAudioUri
+  val effectiveCustomName = selectedCustomAudioName ?: settings.customAudioName
+  val hasCustomAudio = !effectiveCustomUri.isNullOrBlank()
+
   val audioPickerLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.OpenDocument()
   ) { uri ->
     if (uri != null) {
-      viewModel.setCustomAudioUri(uri, selectAsDefaultProfile = false)
-      onSelect(NoiseProfile.CUSTOM_AUDIO)
+      onPickCustomAudioUri(uri)
     }
   }
 
@@ -915,7 +986,7 @@ fun IntervalSoundPickerDialog(
           modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .clickable { onSelect(null) }
+            .clickable { onSelect(null, null, null) }
             .testTag("sound_option_silent")
         ) {
           Row(
@@ -960,7 +1031,6 @@ fun IntervalSoundPickerDialog(
         NoiseProfile.entries.forEach { profile ->
           val isSelected = selectedSound == profile
           val isCustomProfile = profile == NoiseProfile.CUSTOM_AUDIO
-          val hasCustomAudio = !settings.customAudioUri.isNullOrBlank()
           val isPreviewing = settings.isWhiteNoisePlaying && settings.previewingProfile == profile
 
           Surface(
@@ -977,81 +1047,101 @@ fun IntervalSoundPickerDialog(
                 if (isCustomProfile && !hasCustomAudio) {
                   audioPickerLauncher.launch(arrayOf("audio/*"))
                 } else {
-                  onSelect(profile)
+                  onSelect(
+                    profile,
+                    if (isCustomProfile) effectiveCustomUri else null,
+                    if (isCustomProfile) effectiveCustomName else null
+                  )
                 }
               }
               .testTag("sound_option_${profile.name}")
           ) {
-            Row(
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-              Box(
-                modifier = Modifier
-                  .size(16.dp)
-                  .clip(CircleShape)
-                  .border(
-                    2.dp,
-                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                    CircleShape
-                  )
-                  .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
-              )
-
-              Column(modifier = Modifier.weight(1f)) {
-                Text(
-                  text = profile.displayName,
-                  style = MaterialTheme.typography.bodyMedium,
-                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                  color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(16.dp)
+                    .clip(CircleShape)
+                    .border(
+                      2.dp,
+                      if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                      CircleShape
+                    )
+                    .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
                 )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                  text = if (isCustomProfile && hasCustomAudio) {
-                    "Selected: ${settings.customAudioName ?: "Custom Audio"}"
-                  } else {
-                    profile.description
-                  },
-                  style = MaterialTheme.typography.bodySmall,
-                  fontSize = 11.sp,
-                  lineHeight = 14.sp,
-                  color = if (isCustomProfile && hasCustomAudio) {
-                    MaterialTheme.colorScheme.onSurface
-                  } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                  },
-                  maxLines = 2,
-                  overflow = TextOverflow.Ellipsis
-                )
-              }
 
-              if (isCustomProfile) {
-                IconButton(
-                  onClick = { audioPickerLauncher.launch(arrayOf("audio/*")) },
-                  modifier = Modifier.size(36.dp)
-                ) {
-                  Icon(
-                    imageVector = Icons.Default.AudioFile,
-                    contentDescription = if (hasCustomAudio) "Change audio file" else "Browse audio file",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = profile.displayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
                   )
+                  Spacer(modifier = Modifier.height(2.dp))
+                  Text(
+                    text = if (isCustomProfile && hasCustomAudio) {
+                      "Selected: ${effectiveCustomName ?: "Custom Audio"}"
+                    } else {
+                      profile.description
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                    color = if (isCustomProfile && hasCustomAudio) {
+                      MaterialTheme.colorScheme.onSurface
+                    } else {
+                      MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                }
+
+                if (isCustomProfile) {
+                  IconButton(
+                    onClick = { audioPickerLauncher.launch(arrayOf("audio/*")) },
+                    modifier = Modifier.minimumInteractiveComponentSize()
+                  ) {
+                    Icon(
+                      imageVector = Icons.Default.AudioFile,
+                      contentDescription = if (hasCustomAudio) "Change audio file" else "Browse audio file",
+                      tint = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+
+                if (!isCustomProfile || hasCustomAudio) {
+                  IconButton(
+                    onClick = {
+                      viewModel.toggleNoiseProfilePreview(
+                        profile = profile,
+                        customUriOverride = if (isCustomProfile) effectiveCustomUri else null
+                      )
+                    },
+                    modifier = Modifier.minimumInteractiveComponentSize()
+                  ) {
+                    Icon(
+                      imageVector = if (isPreviewing) Icons.Default.Stop else Icons.Default.PlayArrow,
+                      contentDescription = if (isPreviewing) "Stop preview" else "Preview ${profile.shortLabel}",
+                      tint = if (isPreviewing) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(20.dp)
+                    )
+                  }
                 }
               }
 
-              if (!isCustomProfile || hasCustomAudio) {
-                IconButton(
-                  onClick = { viewModel.toggleNoiseProfilePreview(profile) },
-                  modifier = Modifier.size(38.dp)
-                ) {
-                  Icon(
-                    imageVector = if (isPreviewing) Icons.Default.Stop else Icons.Default.PlayArrow,
-                    contentDescription = if (isPreviewing) "Stop preview" else "Preview ${profile.shortLabel}",
-                    tint = if (isPreviewing) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                  )
-                }
+              if (isCustomProfile && settings.customAudioError != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                  text = settings.customAudioError!!,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.error,
+                  fontSize = 11.sp
+                )
               }
             }
           }
@@ -1060,7 +1150,7 @@ fun IntervalSoundPickerDialog(
     },
     confirmButton = {
       TextButton(onClick = onDismiss) {
-        Text("Cancel")
+        Text("Close")
       }
     }
   )

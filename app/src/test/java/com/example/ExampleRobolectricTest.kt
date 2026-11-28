@@ -168,6 +168,66 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun `test interval jump preservation, standard skip, per-step custom audio, and non-destructive preset save`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val vm = com.example.viewmodel.ChronoViewModel(app)
+
+    // 1. Standard interval skip from READY (Quick Movement Break has 5s warmup)
+    val tabata = com.example.data.PresetDefaults.defaultIntervalConfigs.last()
+    vm.selectIntervalConfig(tabata)
+    assertEquals(com.example.model.IntervalPhase.READY, vm.intervalState.value.phase)
+    assertEquals(tabata.warmupSec, vm.intervalState.value.phaseRemainingSeconds)
+
+    vm.skipToNextIntervalStep()
+    assertEquals(com.example.model.IntervalPhase.WORK, vm.intervalState.value.phase)
+    assertEquals(tabata.workSec, vm.intervalState.value.phaseRemainingSeconds)
+    assertFalse(vm.intervalState.value.isRunning)
+
+    // 2. Multi-step jump while READY is preserved when startInterval() runs
+    val multi = com.example.model.IntervalConfig(
+      id = "multi_jump_test",
+      name = "Jump Test",
+      repeatCount = 2,
+      isCustom = true,
+      steps = listOf(
+        com.example.model.IntervalStep(id = "j1", name = "Step 1", durationSeconds = 40),
+        com.example.model.IntervalStep(id = "j2", name = "Step 2", durationSeconds = 25),
+        com.example.model.IntervalStep(id = "j3", name = "Step 3", durationSeconds = 15)
+      )
+    )
+    vm.saveCustomIntervalPreset(multi)
+    vm.jumpToIntervalStep(2)
+    assertEquals(2, vm.intervalState.value.currentStepIndex)
+    assertEquals(15, vm.intervalState.value.phaseRemainingSeconds)
+
+    vm.startInterval()
+    assertTrue(vm.intervalState.value.isRunning)
+    assertEquals(2, vm.intervalState.value.currentStepIndex)
+
+    // 3. Updating per-step custom audio does not overwrite global customAudioUri
+    vm.updateActiveIntervalStepSound(
+      stepIndex = 2,
+      sound = NoiseProfile.CUSTOM_AUDIO,
+      customAudioUri = "content://audio/step3.mp3",
+      customAudioName = "step3.mp3"
+    )
+    assertEquals(NoiseProfile.CUSTOM_AUDIO, vm.intervalState.value.currentStep?.backgroundSound)
+    assertEquals("content://audio/step3.mp3", vm.intervalState.value.currentStep?.customAudioUri)
+    assertEquals("step3.mp3", vm.intervalState.value.currentStep?.customAudioName)
+    assertEquals(null, vm.settings.value.customAudioUri)
+
+    // 4. Saving an unrelated preset with selectAfterSave=false does not interrupt running session
+    val otherPreset = multi.copy(id = "other_preset", name = "Other")
+    vm.saveCustomIntervalPreset(otherPreset, selectAfterSave = false)
+    assertEquals("multi_jump_test", vm.intervalState.value.config.id)
+    assertTrue(vm.intervalState.value.isRunning)
+
+    vm.resetInterval()
+    assertFalse(vm.intervalState.value.isRunning)
+    assertEquals(1f, vm.intervalState.value.progressInPhase, 0.001f)
+  }
+
+  @Test
   fun `test customizable timer quick add increment persistence and timer update`() {
     val app = ApplicationProvider.getApplicationContext<android.app.Application>()
     val repository = PresetRepository(app)

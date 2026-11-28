@@ -66,10 +66,12 @@ data class IntervalUiState(
   val config: IntervalConfig = PresetDefaults.defaultIntervalConfigs.first(),
   val phase: IntervalPhase = IntervalPhase.READY,
   val phaseRemainingSeconds: Int = 0,
+  val phaseRemainingMillis: Long = 0L,
   val currentSet: Int = 1,
   val currentStepIndex: Int = 0,
   val isRunning: Boolean = false,
-  val progressInPhase: Float = 1f
+  val progressInPhase: Float = 1f,
+  val isCompletionRinging: Boolean = false
 ) {
   val currentStep: IntervalStep?
     get() = config.steps.getOrNull(currentStepIndex)
@@ -136,6 +138,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   val customAudioPlayer = CustomAudioPlayer(application)
   private var isPreviewActive = false
   private var previewProfile: NoiseProfile? = null
+  private var previewCustomAudioUri: String? = null
 
   @Volatile
   private var customPresetsModified = false
@@ -173,9 +176,11 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
   // Interval state
   private val _intervalState = MutableStateFlow(
     PresetDefaults.defaultIntervalConfigs.first().let { initial ->
+      val initialSec = initialIntervalSeconds(initial)
       IntervalUiState(
         config = initial,
-        phaseRemainingSeconds = initialIntervalSeconds(initial)
+        phaseRemainingSeconds = initialSec,
+        phaseRemainingMillis = initialSec * 1000L
       )
     }
   )
@@ -616,16 +621,31 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
+  private fun stopIntervalAlarmIfRinging() {
+    if (_intervalState.value.isCompletionRinging) {
+      soundHapticHelper.stopAlarmAlert()
+    }
+  }
+
+  fun dismissIntervalAlarm() {
+    soundHapticHelper.stopAlarmAlert()
+    _intervalState.update { it.copy(isCompletionRinging = false) }
+  }
+
   fun selectIntervalConfig(config: IntervalConfig) {
+    stopIntervalAlarmIfRinging()
     pauseInterval(playClick = false)
+    val initialSec = initialIntervalSeconds(config)
     _intervalState.value = IntervalUiState(
       config = config,
       phase = IntervalPhase.READY,
-      phaseRemainingSeconds = initialIntervalSeconds(config),
+      phaseRemainingSeconds = initialSec,
+      phaseRemainingMillis = initialSec * 1000L,
       currentSet = 1,
       currentStepIndex = 0,
       isRunning = false,
-      progressInPhase = 1f
+      progressInPhase = 1f,
+      isCompletionRinging = false
     )
     syncWhiteNoise()
   }
@@ -638,9 +658,15 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
+  fun restartInterval() {
+    resetInterval(playClick = false)
+    startInterval()
+  }
+
   fun startInterval() {
     if (_intervalState.value.isRunning) return
     val current = _intervalState.value
+    stopIntervalAlarmIfRinging()
 
     soundHapticHelper.playCountdownBeep(_settings.value.soundEnabled, isFinalGo = true)
     soundHapticHelper.vibrateClick(_settings.value.vibrationEnabled)
@@ -649,15 +675,17 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       val steps = current.config.steps
       if (steps.isEmpty()) return
 
-      val isStartingFresh = current.phase == IntervalPhase.READY || current.phase == IntervalPhase.FINISHED
-      val startStepIndex = if (isStartingFresh) 0 else current.currentStepIndex.coerceIn(0, steps.lastIndex)
-      val startSet = if (isStartingFresh) 1 else current.currentSet.coerceIn(1, current.config.repeatCount.coerceAtLeast(1))
+      val isRestartFromFinished = current.phase == IntervalPhase.FINISHED
+      val startStepIndex = if (isRestartFromFinished) 0 else current.currentStepIndex.coerceIn(0, steps.lastIndex)
+      val startSet = if (isRestartFromFinished) 1 else current.currentSet.coerceIn(1, current.config.repeatCount.coerceAtLeast(1))
       val stepDuration = steps[startStepIndex].durationSeconds.coerceAtLeast(1)
-      val initialSeconds = if (isStartingFresh || current.phaseRemainingSeconds <= 0) {
-        stepDuration
+      val stepTotalMillis = stepDuration * 1000L
+      val initialMillis = if (isRestartFromFinished || current.phaseRemainingMillis <= 0L) {
+        stepTotalMillis
       } else {
-        current.phaseRemainingSeconds
+        current.phaseRemainingMillis.coerceAtMost(stepTotalMillis)
       }
+      val initialSeconds = ((initialMillis + 999L) / 1000L).toInt().coerceAtLeast(1)
 
       _intervalState.update {
         it.copy(
@@ -666,28 +694,43 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
           currentStepIndex = startStepIndex,
           currentSet = startSet,
           phaseRemainingSeconds = initialSeconds,
-          progressInPhase = initialSeconds.toFloat() / stepDuration.toFloat()
+          phaseRemainingMillis = initialMillis,
+          progressInPhase = (initialMillis.toFloat() / stepTotalMillis.toFloat()).coerceIn(0f, 1f),
+          isCompletionRinging = false
         )
       }
     } else {
-      val nextPhase = if (current.phase == IntervalPhase.READY || current.phase == IntervalPhase.FINISHED) {
+      val isRestartFromFinished = current.phase == IntervalPhase.FINISHED
+      val startSet = if (isRestartFromFinished) 1 else current.currentSet.coerceIn(1, current.config.sets.coerceAtLeast(1))
+      val nextPhase = if (isRestartFromFinished || current.phase == IntervalPhase.READY) {
         if (current.config.warmupSec > 0) IntervalPhase.PREPARE else IntervalPhase.WORK
       } else {
         current.phase
       }
 
-      val initialSeconds = when (nextPhase) {
-        IntervalPhase.PREPARE -> if (current.phaseRemainingSeconds > 0) current.phaseRemainingSeconds else current.config.warmupSec
-        IntervalPhase.WORK -> if (current.phaseRemainingSeconds > 0) current.phaseRemainingSeconds else current.config.workSec
-        IntervalPhase.REST -> if (current.phaseRemainingSeconds > 0) current.phaseRemainingSeconds else current.config.restSec
+      val phaseTotalSec = when (nextPhase) {
+        IntervalPhase.PREPARE -> current.config.warmupSec
+        IntervalPhase.WORK -> current.config.workSec
+        IntervalPhase.REST -> current.config.restSec
         else -> current.config.workSec
+      }.coerceAtLeast(1)
+      val phaseTotalMillis = phaseTotalSec * 1000L
+      val initialMillis = if (isRestartFromFinished || current.phaseRemainingMillis <= 0L) {
+        phaseTotalMillis
+      } else {
+        current.phaseRemainingMillis.coerceAtMost(phaseTotalMillis)
       }
+      val initialSeconds = ((initialMillis + 999L) / 1000L).toInt().coerceAtLeast(1)
 
       _intervalState.update {
         it.copy(
           isRunning = true,
           phase = nextPhase,
-          phaseRemainingSeconds = initialSeconds
+          currentSet = startSet,
+          phaseRemainingSeconds = initialSeconds,
+          phaseRemainingMillis = initialMillis,
+          progressInPhase = (initialMillis.toFloat() / phaseTotalMillis.toFloat()).coerceIn(0f, 1f),
+          isCompletionRinging = false
         )
       }
     }
@@ -696,52 +739,83 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
 
     intervalJob?.cancel()
     intervalJob = viewModelScope.launch {
+      var lastTick = SystemClock.elapsedRealtime()
       while (isActive && _intervalState.value.isRunning) {
-        delay(1000)
+        delay(100)
         val s = _intervalState.value
-        val nextSec = s.phaseRemainingSeconds - 1
+        if (!s.isRunning) break
 
-        if (nextSec in 1..3) {
-          soundHapticHelper.playCountdownBeep(_settings.value.soundEnabled, isFinalGo = false)
-        }
+        val now = SystemClock.elapsedRealtime()
+        val delta = (now - lastTick).coerceAtLeast(0L)
+        lastTick = now
 
-        if (nextSec <= 0) {
-          soundHapticHelper.playCountdownBeep(_settings.value.soundEnabled, isFinalGo = true)
-          soundHapticHelper.vibrateLap(_settings.value.vibrationEnabled)
-          advanceIntervalPhase()
+        val newMillis = (s.phaseRemainingMillis - delta).coerceAtLeast(0L)
+        val newSec = ((newMillis + 999L) / 1000L).toInt().coerceAtLeast(0)
+
+        if (newMillis <= 0L) {
+          val willFinish = isIntervalSessionEnding(s)
+          if (!willFinish) {
+            soundHapticHelper.playCountdownBeep(_settings.value.soundEnabled, isFinalGo = true)
+            soundHapticHelper.vibrateLap(_settings.value.vibrationEnabled)
+          }
+          advanceIntervalPhase(triggerAlarmOnFinish = true)
+          lastTick = SystemClock.elapsedRealtime()
         } else {
-          val totalSec = if (s.config.isMultiStep) {
-            s.currentStep?.durationSeconds ?: 1
-          } else {
-            when (s.phase) {
-              IntervalPhase.PREPARE -> s.config.warmupSec
-              IntervalPhase.WORK -> s.config.workSec
-              IntervalPhase.REST -> s.config.restSec
-              else -> 1
-            }
-          }.coerceAtLeast(1)
-          val progress = nextSec.toFloat() / totalSec.toFloat()
+          if (newSec != s.phaseRemainingSeconds && newSec in 1..3) {
+            soundHapticHelper.playCountdownBeep(_settings.value.soundEnabled, isFinalGo = false)
+          }
+          val totalSec = totalSecondsForState(s).coerceAtLeast(1)
+          val progress = (newMillis.toFloat() / (totalSec * 1000f)).coerceIn(0f, 1f)
           _intervalState.update {
-            it.copy(phaseRemainingSeconds = nextSec, progressInPhase = progress)
+            it.copy(
+              phaseRemainingSeconds = newSec,
+              phaseRemainingMillis = newMillis,
+              progressInPhase = progress
+            )
           }
         }
       }
     }
   }
 
-  private fun advanceIntervalPhase() {
+  private fun totalSecondsForState(s: IntervalUiState): Int {
+    return if (s.config.isMultiStep) {
+      s.currentStep?.durationSeconds ?: 1
+    } else {
+      when (s.phase) {
+        IntervalPhase.PREPARE -> s.config.warmupSec
+        IntervalPhase.WORK -> s.config.workSec
+        IntervalPhase.REST -> s.config.restSec
+        else -> s.config.workSec
+      }
+    }
+  }
+
+  private fun isIntervalSessionEnding(s: IntervalUiState): Boolean {
+    return if (s.config.isMultiStep) {
+      val steps = s.config.steps
+      val totalCycles = s.config.repeatCount.coerceAtLeast(1)
+      s.currentStepIndex + 1 >= steps.size && s.currentSet >= totalCycles
+    } else {
+      s.phase == IntervalPhase.WORK && s.currentSet >= s.config.sets
+    }
+  }
+
+  private fun advanceIntervalPhase(triggerAlarmOnFinish: Boolean = true) {
     val s = _intervalState.value
     if (s.config.isMultiStep) {
       val steps = s.config.steps
+      if (steps.isEmpty()) return
       val totalCycles = s.config.repeatCount.coerceAtLeast(1)
       if (s.currentStepIndex + 1 < steps.size) {
         val nextIdx = s.currentStepIndex + 1
         val nextStep = steps[nextIdx]
         _intervalState.update {
           it.copy(
-            phase = IntervalPhase.WORK,
+            phase = if (it.isRunning) IntervalPhase.WORK else it.phase,
             currentStepIndex = nextIdx,
             phaseRemainingSeconds = nextStep.durationSeconds,
+            phaseRemainingMillis = nextStep.durationSeconds * 1000L,
             progressInPhase = 1f
           )
         }
@@ -749,22 +823,28 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
         val nextStep = steps.first()
         _intervalState.update {
           it.copy(
-            phase = IntervalPhase.WORK,
+            phase = if (it.isRunning) IntervalPhase.WORK else it.phase,
             currentStepIndex = 0,
             currentSet = it.currentSet + 1,
             phaseRemainingSeconds = nextStep.durationSeconds,
+            phaseRemainingMillis = nextStep.durationSeconds * 1000L,
             progressInPhase = 1f
           )
         }
       } else {
-        soundHapticHelper.startAlarmAlert(_settings.value.soundEnabled, _settings.value.vibrationEnabled)
+        if (triggerAlarmOnFinish) {
+          soundHapticHelper.startAlarmAlert(_settings.value.soundEnabled, _settings.value.vibrationEnabled)
+        }
         intervalJob?.cancel()
+        intervalJob = null
         _intervalState.update {
           it.copy(
             phase = IntervalPhase.FINISHED,
             phaseRemainingSeconds = 0,
+            phaseRemainingMillis = 0L,
             isRunning = false,
-            progressInPhase = 0f
+            progressInPhase = 0f,
+            isCompletionRinging = triggerAlarmOnFinish
           )
         }
       }
@@ -778,27 +858,44 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
           it.copy(
             phase = IntervalPhase.WORK,
             phaseRemainingSeconds = it.config.workSec,
+            phaseRemainingMillis = it.config.workSec * 1000L,
             progressInPhase = 1f
           )
         }
       }
       IntervalPhase.WORK -> {
         if (s.currentSet >= s.config.sets) {
-          soundHapticHelper.startAlarmAlert(_settings.value.soundEnabled, _settings.value.vibrationEnabled)
+          if (triggerAlarmOnFinish) {
+            soundHapticHelper.startAlarmAlert(_settings.value.soundEnabled, _settings.value.vibrationEnabled)
+          }
           intervalJob?.cancel()
+          intervalJob = null
           _intervalState.update {
             it.copy(
               phase = IntervalPhase.FINISHED,
               phaseRemainingSeconds = 0,
+              phaseRemainingMillis = 0L,
               isRunning = false,
-              progressInPhase = 0f
+              progressInPhase = 0f,
+              isCompletionRinging = triggerAlarmOnFinish
+            )
+          }
+        } else if (s.config.restSec > 0) {
+          _intervalState.update {
+            it.copy(
+              phase = IntervalPhase.REST,
+              phaseRemainingSeconds = it.config.restSec,
+              phaseRemainingMillis = it.config.restSec * 1000L,
+              progressInPhase = 1f
             )
           }
         } else {
           _intervalState.update {
             it.copy(
-              phase = IntervalPhase.REST,
-              phaseRemainingSeconds = it.config.restSec,
+              phase = IntervalPhase.WORK,
+              phaseRemainingSeconds = it.config.workSec,
+              phaseRemainingMillis = it.config.workSec * 1000L,
+              currentSet = it.currentSet + 1,
               progressInPhase = 1f
             )
           }
@@ -809,6 +906,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
           it.copy(
             phase = IntervalPhase.WORK,
             phaseRemainingSeconds = it.config.workSec,
+            phaseRemainingMillis = it.config.workSec * 1000L,
             currentSet = it.currentSet + 1,
             progressInPhase = 1f
           )
@@ -821,38 +919,109 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
 
   fun skipToNextIntervalStep() {
     val s = _intervalState.value
-    if (!s.config.isMultiStep) return
+    stopIntervalAlarmIfRinging()
     soundHapticHelper.playClickSound(_settings.value.soundEnabled)
     soundHapticHelper.vibrateClick(_settings.value.vibrationEnabled)
-    if (s.phase == IntervalPhase.READY || s.phase == IntervalPhase.FINISHED) {
-      val nextIdx = if (s.config.steps.size > 1) 1 else 0
-      val step = s.config.steps[nextIdx]
-      _intervalState.update {
-        it.copy(
-          phase = IntervalPhase.WORK,
-          currentStepIndex = nextIdx,
-          currentSet = 1,
-          phaseRemainingSeconds = step.durationSeconds,
-          progressInPhase = 1f
-        )
+
+    if (s.config.isMultiStep) {
+      val steps = s.config.steps
+      if (steps.isEmpty()) return
+      if (s.phase == IntervalPhase.READY || s.phase == IntervalPhase.FINISHED) {
+        val nextIdx = if (s.phase == IntervalPhase.FINISHED) 0 else (s.currentStepIndex + 1) % steps.size
+        val nextSet = if (s.phase == IntervalPhase.FINISHED) 1 else s.currentSet
+        val step = steps[nextIdx]
+        _intervalState.update {
+          it.copy(
+            phase = IntervalPhase.READY,
+            currentStepIndex = nextIdx,
+            currentSet = nextSet,
+            phaseRemainingSeconds = step.durationSeconds,
+            phaseRemainingMillis = step.durationSeconds * 1000L,
+            progressInPhase = 1f,
+            isCompletionRinging = false
+          )
+        }
+        syncWhiteNoise()
+      } else {
+        advanceIntervalPhase(triggerAlarmOnFinish = s.isRunning)
       }
-      syncWhiteNoise()
-    } else {
-      advanceIntervalPhase()
+      return
+    }
+
+    when (s.phase) {
+      IntervalPhase.READY -> {
+        if (s.config.warmupSec > 0) {
+          _intervalState.update {
+            it.copy(
+              phase = IntervalPhase.WORK,
+              currentSet = 1,
+              phaseRemainingSeconds = it.config.workSec,
+              phaseRemainingMillis = it.config.workSec * 1000L,
+              progressInPhase = 1f,
+              isCompletionRinging = false
+            )
+          }
+        } else if (s.config.restSec > 0 && s.currentSet < s.config.sets) {
+          _intervalState.update {
+            it.copy(
+              phase = IntervalPhase.REST,
+              phaseRemainingSeconds = it.config.restSec,
+              phaseRemainingMillis = it.config.restSec * 1000L,
+              progressInPhase = 1f,
+              isCompletionRinging = false
+            )
+          }
+        } else if (s.currentSet < s.config.sets) {
+          _intervalState.update {
+            it.copy(
+              phase = IntervalPhase.WORK,
+              currentSet = it.currentSet + 1,
+              phaseRemainingSeconds = it.config.workSec,
+              phaseRemainingMillis = it.config.workSec * 1000L,
+              progressInPhase = 1f,
+              isCompletionRinging = false
+            )
+          }
+        } else {
+          advanceIntervalPhase(triggerAlarmOnFinish = false)
+        }
+        syncWhiteNoise()
+      }
+      IntervalPhase.FINISHED -> {
+        val initialSec = initialIntervalSeconds(s.config)
+        _intervalState.update {
+          it.copy(
+            phase = IntervalPhase.READY,
+            currentSet = 1,
+            phaseRemainingSeconds = initialSec,
+            phaseRemainingMillis = initialSec * 1000L,
+            progressInPhase = 1f,
+            isCompletionRinging = false
+          )
+        }
+        syncWhiteNoise()
+      }
+      else -> {
+        advanceIntervalPhase(triggerAlarmOnFinish = s.isRunning)
+      }
     }
   }
 
   fun jumpToIntervalStep(stepIndex: Int) {
     val s = _intervalState.value
     if (!s.config.isMultiStep || stepIndex !in s.config.steps.indices) return
+    stopIntervalAlarmIfRinging()
     val step = s.config.steps[stepIndex]
     soundHapticHelper.playClickSound(_settings.value.soundEnabled)
     _intervalState.update {
       it.copy(
         currentStepIndex = stepIndex,
+        currentSet = if (it.phase == IntervalPhase.FINISHED) 1 else it.currentSet,
         phase = if (it.isRunning) IntervalPhase.WORK else IntervalPhase.READY,
         phaseRemainingSeconds = step.durationSeconds,
-        progressInPhase = 1f
+        phaseRemainingMillis = step.durationSeconds * 1000L,
+        progressInPhase = 1f,
+        isCompletionRinging = false
       )
     }
     syncWhiteNoise()
@@ -869,38 +1038,100 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
-  fun resetInterval() {
+  fun resetInterval(playClick: Boolean = true) {
+    stopIntervalAlarmIfRinging()
     pauseInterval(playClick = false)
     val config = _intervalState.value.config
+    val initialSec = initialIntervalSeconds(config)
     _intervalState.update {
       IntervalUiState(
         config = config,
         phase = IntervalPhase.READY,
-        phaseRemainingSeconds = initialIntervalSeconds(config),
+        phaseRemainingSeconds = initialSec,
+        phaseRemainingMillis = initialSec * 1000L,
         currentSet = 1,
         currentStepIndex = 0,
         isRunning = false,
-        progressInPhase = 1f
+        progressInPhase = 1f,
+        isCompletionRinging = false
       )
     }
     syncWhiteNoise()
-    soundHapticHelper.playClickSound(_settings.value.soundEnabled)
-    soundHapticHelper.vibrateClick(_settings.value.vibrationEnabled)
+    if (playClick) {
+      soundHapticHelper.playClickSound(_settings.value.soundEnabled)
+      soundHapticHelper.vibrateClick(_settings.value.vibrationEnabled)
+    }
   }
 
-  fun updateCustomInterval(warmup: Int, work: Int, rest: Int, sets: Int) {
-    val updated = IntervalConfig(
-      id = "custom",
-      name = "Custom Interval",
-      warmupSec = warmup.coerceAtLeast(0),
-      workSec = work.coerceAtLeast(5),
-      restSec = rest.coerceAtLeast(0),
-      sets = sets.coerceAtLeast(1)
-    )
-    selectIntervalConfig(updated)
+  fun updateActiveIntervalStepSound(
+    stepIndex: Int,
+    sound: NoiseProfile?,
+    customAudioUri: String? = null,
+    customAudioName: String? = null
+  ) {
+    val current = _intervalState.value
+    val config = current.config
+    if (!config.isMultiStep || stepIndex !in config.steps.indices) return
+
+    val updatedSteps = config.steps.mapIndexed { idx, step ->
+      if (idx == stepIndex) {
+        if (sound == NoiseProfile.CUSTOM_AUDIO) {
+          step.copy(
+            backgroundSound = sound,
+            customAudioUri = customAudioUri ?: step.customAudioUri,
+            customAudioName = customAudioName ?: step.customAudioName
+          )
+        } else {
+          step.copy(backgroundSound = sound)
+        }
+      } else {
+        step
+      }
+    }
+    val updatedConfig = config.copy(steps = updatedSteps)
+    _intervalState.update { it.copy(config = updatedConfig) }
+
+    if (updatedConfig.isCustom && _customIntervalPresets.value.any { it.id == updatedConfig.id }) {
+      val updatedPresets = _customIntervalPresets.value.map {
+        if (it.id == updatedConfig.id) updatedConfig else it
+      }
+      _customIntervalPresets.value = updatedPresets
+      viewModelScope.launch(Dispatchers.IO) {
+        repository.saveCustomIntervalPresets(updatedPresets)
+      }
+    }
+    syncWhiteNoise()
   }
 
-  fun saveCustomIntervalPreset(preset: IntervalConfig) {
+  fun takeAudioPermissionAndResolveName(
+    uri: Uri,
+    onResolved: (uriString: String, displayName: String) -> Unit
+  ) {
+    val appContext = getApplication<Application>()
+    try {
+      appContext.contentResolver.takePersistableUriPermission(
+        uri,
+        Intent.FLAG_GRANT_READ_URI_PERMISSION
+      )
+    } catch (_: SecurityException) {
+    } catch (_: Exception) {
+    }
+
+    val uriString = uri.toString()
+    val fallbackName = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "Custom Audio"
+    onResolved(uriString, fallbackName)
+
+    viewModelScope.launch(Dispatchers.IO) {
+      val resolvedName = resolveAudioDisplayName(appContext, uri) ?: fallbackName
+      if (resolvedName != fallbackName) {
+        launch(Dispatchers.Main) {
+          onResolved(uriString, resolvedName)
+        }
+      }
+    }
+  }
+
+  fun saveCustomIntervalPreset(preset: IntervalConfig, selectAfterSave: Boolean = true) {
     customIntervalPresetsModified = true
     val normalized = preset.copy(
       id = preset.id.ifBlank { UUID.randomUUID().toString() },
@@ -918,7 +1149,9 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     viewModelScope.launch(Dispatchers.IO) {
       repository.saveCustomIntervalPresets(updated)
     }
-    selectIntervalConfig(normalized)
+    if (selectAfterSave || _intervalState.value.config.id == normalized.id) {
+      selectIntervalConfig(normalized)
+    }
     soundHapticHelper.playClickSound(_settings.value.soundEnabled)
   }
 
@@ -1015,16 +1248,24 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
 
     var shouldPlay = false
     var targetProfile = _settings.value.whiteNoiseProfile
+    var targetCustomUri = _settings.value.customAudioUri
 
     if (activePreview != null) {
       shouldPlay = true
       targetProfile = activePreview
+      if (activePreview == NoiseProfile.CUSTOM_AUDIO && !previewCustomAudioUri.isNullOrBlank()) {
+        targetCustomUri = previewCustomAudioUri
+      }
     } else if (interval.isRunning) {
       if (interval.config.isMultiStep) {
-        val stepSound = interval.currentStep?.backgroundSound
+        val currentStep = interval.currentStep
+        val stepSound = currentStep?.backgroundSound
         if (stepSound != null) {
           shouldPlay = true
           targetProfile = stepSound
+          if (stepSound == NoiseProfile.CUSTOM_AUDIO && !currentStep.customAudioUri.isNullOrBlank()) {
+            targetCustomUri = currentStep.customAudioUri
+          }
         } else if (_settings.value.whiteNoiseEnabled && anyTimerRunning) {
           shouldPlay = true
           targetProfile = _settings.value.whiteNoiseProfile
@@ -1044,7 +1285,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       if (noiseGenerator.isPlaying) {
         noiseGenerator.stop()
       }
-      val uriStr = _settings.value.customAudioUri
+      val uriStr = targetCustomUri
       if (!uriStr.isNullOrBlank()) {
         val parsedUri = Uri.parse(uriStr)
         if (!customAudioPlayer.isPlaying || customAudioPlayer.currentUriString != uriStr) {
@@ -1054,6 +1295,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
             onError = { message ->
               isPreviewActive = false
               previewProfile = null
+              previewCustomAudioUri = null
               _settings.update {
                 it.copy(
                   isWhiteNoisePlaying = false,
@@ -1085,6 +1327,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
         }
         isPreviewActive = false
         previewProfile = null
+        previewCustomAudioUri = null
         val currentSettings = _settings.value
         if (currentSettings.isWhiteNoisePlaying || currentSettings.previewingProfile != null) {
           _settings.update { it.copy(isWhiteNoisePlaying = false, previewingProfile = null) }
@@ -1245,6 +1488,7 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
     if (isPreviewActive) {
       isPreviewActive = false
       previewProfile = null
+      previewCustomAudioUri = null
     } else {
       val profile = _settings.value.whiteNoiseProfile
       if (profile == NoiseProfile.CUSTOM_AUDIO && _settings.value.customAudioUri.isNullOrBlank()) {
@@ -1252,28 +1496,33 @@ class ChronoViewModel(application: Application) : AndroidViewModel(application) 
       }
       isPreviewActive = true
       previewProfile = profile
+      previewCustomAudioUri = null
     }
     syncWhiteNoise()
   }
 
-  fun toggleNoiseProfilePreview(profile: NoiseProfile) {
-    if (isPreviewActive && previewProfile == profile) {
+  fun toggleNoiseProfilePreview(profile: NoiseProfile, customUriOverride: String? = null) {
+    val effectiveUri = customUriOverride ?: _settings.value.customAudioUri
+    if (isPreviewActive && previewProfile == profile && previewCustomAudioUri == customUriOverride) {
       isPreviewActive = false
       previewProfile = null
+      previewCustomAudioUri = null
     } else {
-      if (profile == NoiseProfile.CUSTOM_AUDIO && _settings.value.customAudioUri.isNullOrBlank()) {
+      if (profile == NoiseProfile.CUSTOM_AUDIO && effectiveUri.isNullOrBlank()) {
         return
       }
       isPreviewActive = true
       previewProfile = profile
+      previewCustomAudioUri = customUriOverride
     }
     syncWhiteNoise()
   }
 
   fun stopWhiteNoisePreview() {
-    if (isPreviewActive || previewProfile != null) {
+    if (isPreviewActive || previewProfile != null || previewCustomAudioUri != null) {
       isPreviewActive = false
       previewProfile = null
+      previewCustomAudioUri = null
       syncWhiteNoise()
     }
   }

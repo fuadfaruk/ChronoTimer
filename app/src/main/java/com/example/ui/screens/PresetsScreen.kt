@@ -631,7 +631,11 @@ fun PresetsScreen(
         editingPreset = editingIntervalPreset,
         onDismiss = { showIntervalEditor = false },
         onSave = { savedPreset ->
-          viewModel.saveCustomIntervalPreset(savedPreset)
+          val intervalState = viewModel.intervalState.value
+          viewModel.saveCustomIntervalPreset(
+            preset = savedPreset,
+            selectAfterSave = intervalState.config.id == savedPreset.id || !intervalState.isRunning
+          )
           showIntervalEditor = false
         },
         onDelete = { presetId ->

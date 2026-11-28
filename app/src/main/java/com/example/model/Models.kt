@@ -51,7 +51,9 @@ data class IntervalStep(
   val name: String,
   val durationSeconds: Int,
   val backgroundSound: NoiseProfile? = null,
-  val colorHex: Long = 0xFF00E676
+  val colorHex: Long = 0xFF00E676,
+  val customAudioUri: String? = null,
+  val customAudioName: String? = null
 )
 
 @Immutable
@@ -75,6 +77,40 @@ data class IntervalConfig(
     } else {
       warmupSec + (workSec + restSec) * sets
     }
+
+  fun toEditableSteps(): List<IntervalStep> {
+    if (steps.isNotEmpty()) return steps
+    val generated = mutableListOf<IntervalStep>()
+    if (warmupSec > 0) {
+      generated.add(
+        IntervalStep(
+          name = "Get Ready",
+          durationSeconds = warmupSec.coerceAtLeast(5),
+          backgroundSound = null,
+          colorHex = 0xFFFF9100L
+        )
+      )
+    }
+    generated.add(
+      IntervalStep(
+        name = "Study Focus",
+        durationSeconds = workSec.coerceAtLeast(5),
+        backgroundSound = NoiseProfile.VOICE_MASKING,
+        colorHex = 0xFF00E676L
+      )
+    )
+    if (restSec > 0) {
+      generated.add(
+        IntervalStep(
+          name = "Break Time",
+          durationSeconds = restSec.coerceAtLeast(5),
+          backgroundSound = null,
+          colorHex = 0xFF00E5FFL
+        )
+      )
+    }
+    return generated
+  }
 }
 
 @Immutable
